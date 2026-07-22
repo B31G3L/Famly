@@ -1,188 +1,65 @@
 package com.beigel.famly.data.repository
 
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import com.beigel.famly.data.model.AvatarAccent
-import com.beigel.famly.data.model.FamilyMember
 import com.beigel.famly.data.model.FamilyTree
-import com.beigel.famly.data.model.MemberStatus
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.data.model.TreePosition
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.UUID
 
-interface FamilyRepository {
-    fun getCurrentUserName(): String
-    fun getFamilyTree(): FamilyTree
-    fun getRecentlyAdded(): List<Person>
-    fun getTreeMembers(): List<Person>
-    fun getPersonById(id: String): Person?
-    fun getFamilyMembers(): List<FamilyMember>
-    fun getInviteCode(): String
-
-    /** Legt eine neue Person an und ordnet sie automatisch im Baum ein. */
-    fun addPerson(
-        name: String,
-        relation: String,
-        birthDate: String,
-        birthPlace: String,
-        isDeceased: Boolean,
-        bio: String,
-        connections: List<String>
-    ): Person
-
-    /** Aktualisiert eine bestehende Person (Position im Baum bleibt erhalten). */
-    fun updatePerson(
-        id: String,
-        name: String,
-        relation: String,
-        birthDate: String,
-        birthPlace: String,
-        isDeceased: Boolean,
-        bio: String,
-        connections: List<String>
-    )
-
-    fun deletePerson(id: String)
-}
-
 /**
- * In-Memory-Repository auf Basis einer Compose-SnapshotStateList.
- * Da Compose Lesezugriffe auf diese Liste automatisch beobachtet, sorgt jede
- * Änderung (add/update/delete) dafür, dass alle Screens, die z. B.
- * getTreeMembers() aufrufen, automatisch neu zeichnen – ganz ohne ViewModel
- * oder Flow-Umweg.
+ * In-Memory-Repository, das dasselbe Interface wie [FirestoreFamilyRepository]
+ * implementiert. Wird nicht mehr in [com.beigel.famly.di.AppContainer]
+ * verwendet, ist aber weiterhin praktisch für Compose-Previews und Tests,
+ * die ohne Firebase-Anbindung auskommen sollen.
  */
 class FakeFamilyRepository : FamilyRepository {
 
     private val oma = Person(
-        id = "oma",
-        name = "Oma Grete",
-        initial = "O",
-        relation = "Großmutter",
-        accent = AvatarAccent.YELLOW,
-        birthDate = "3. Mai 1945",
-        birthPlace = "Stuttgart",
+        id = "oma", name = "Oma Grete", initial = "O", relation = "Großmutter",
+        accent = AvatarAccent.YELLOW, birthDate = "3. Mai 1945", birthPlace = "Stuttgart",
         bio = "Grete führte über 40 Jahre lang die Familiengärtnerei und liebt es, samstags zu backen.",
         treePosition = TreePosition(0, 0)
     )
-
     private val opa = Person(
-        id = "opa",
-        name = "Opa Heinz",
-        initial = "O",
-        relation = "Großvater",
-        accent = AvatarAccent.YELLOW,
-        birthDate = "17. Januar 1943",
-        birthPlace = "Ulm",
+        id = "opa", name = "Opa Heinz", initial = "O", relation = "Großvater",
+        accent = AvatarAccent.YELLOW, birthDate = "17. Januar 1943", birthPlace = "Ulm",
         bio = "Heinz war Schreiner und baut heute noch kleine Holzspielzeuge für die Enkel.",
         treePosition = TreePosition(0, 1)
     )
-
-    private val tanteErika = Person(
-        id = "tante_erika",
-        name = "Tante Erika",
-        initial = "E",
-        relation = "Tante",
-        accent = AvatarAccent.GREEN,
-        birthDate = "9. Juni 1970",
-        birthPlace = "Ulm",
-        bio = "Erika lebt mit ihrer Familie in Freiburg und organisiert jedes Jahr das Sommerfest.",
-        treePosition = TreePosition(1, 0)
-    )
-
     private val mama = Person(
-        id = "mama",
-        name = "Mama",
-        initial = "M",
-        relation = "Mutter",
-        accent = AvatarAccent.PETROL,
-        birthDate = "22. April 1968",
-        birthPlace = "Stuttgart",
+        id = "mama", name = "Mama", initial = "M", relation = "Mutter",
+        accent = AvatarAccent.PETROL, birthDate = "22. April 1968", birthPlace = "Stuttgart",
         bio = "Mama arbeitet als Krankenschwester und liebt lange Spaziergänge im Wald.",
         treePosition = TreePosition(1, 1)
     )
-
-    private val papa = Person(
-        id = "papa",
-        name = "Papa",
-        initial = "P",
-        relation = "Vater",
-        accent = AvatarAccent.PETROL,
-        birthDate = "11. Februar 1966",
-        birthPlace = "Ulm",
-        bio = "Papa ist begeisterter Hobbykoch und probiert jeden Sonntag ein neues Rezept.",
-        treePosition = TreePosition(1, 2)
-    )
-
-    private val bruderTom = Person(
-        id = "bruder_tom",
-        name = "Bruder Tom",
-        initial = "T",
-        relation = "Bruder",
-        accent = AvatarAccent.ORANGE,
-        birthDate = "30. September 1995",
-        birthPlace = "München",
-        bio = "Tom studiert Maschinenbau und spielt in seiner Freizeit Gitarre in einer Band.",
-        treePosition = TreePosition(2, 0)
-    )
-
     private val ich = Person(
-        id = "ich",
-        name = "Ich",
-        initial = "I",
-        relation = "Ich",
-        accent = AvatarAccent.PETROL,
-        treePosition = TreePosition(2, 1)
+        id = "ich", name = "Ich", initial = "I", relation = "Ich",
+        accent = AvatarAccent.PETROL, treePosition = TreePosition(2, 1)
     )
 
-    private val lena = Person(
-        id = "lena",
-        name = "Lena Müller",
-        initial = "L",
-        relation = "Schwester",
-        accent = AvatarAccent.ORANGE,
-        birthDate = "12. März 1998",
-        birthPlace = "München",
-        isDeceased = false,
-        bio = "Lena liebt Fotografie und lebt seit 2020 in München. Sie besucht die Familie jedes Weihnachten.",
-        connections = listOf("Mama", "Papa"),
-        treePosition = TreePosition(2, 2)
+    private val _familyTree = MutableStateFlow(
+        FamilyTree(
+            id = "familie_mueller",
+            name = "Familie Müller",
+            memberCount = 4,
+            members = listOf(oma, opa, mama, ich)
+        )
     )
+    override val familyTree: StateFlow<FamilyTree> = _familyTree.asStateFlow()
 
-    /** Beobachtbare Liste aller Personen; Reihenfolge = Einfüge-Reihenfolge. */
-    private val members = mutableStateListOf(oma, opa, tanteErika, mama, papa, bruderTom, ich, lena)
+    override val currentUserName: StateFlow<String> = MutableStateFlow("Anna").asStateFlow()
+    override val inviteCode: StateFlow<String> = MutableStateFlow("OFFSHOOT-7F3K2").asStateFlow()
+    override val isLoading: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
 
-    private val accentRotation = AvatarAccent.entries
-    private var accentCursor = mutableStateOf(0)
+    override suspend fun ensureFamilyForCurrentUser() = Unit
 
-    override fun getCurrentUserName(): String = "Anna"
+    override suspend fun joinFamilyWithCode(code: String): Result<Unit> = Result.success(Unit)
 
-    override fun getFamilyTree(): FamilyTree = FamilyTree(
-        id = "familie_mueller",
-        name = "Familie Müller",
-        memberCount = members.size,
-        members = members
-    )
-
-    override fun getRecentlyAdded(): List<Person> =
-        members.filter { it.id != "ich" }.takeLast(2).reversed()
-
-    override fun getTreeMembers(): List<Person> = members
-
-    override fun getPersonById(id: String): Person? = members.find { it.id == id }
-
-    override fun getFamilyMembers(): List<FamilyMember> {
-        val owner = members.find { it.id == "ich" }
-        val others = members.filter { it.id != "ich" }
-        return buildList {
-            if (owner != null) add(FamilyMember(owner, "Besitzer", MemberStatus.OWNER))
-            others.forEach { add(FamilyMember(it, "Mitglied", MemberStatus.PENDING)) }
-        }
-    }
-
-    override fun getInviteCode(): String = "OFFSHOOT-7F3K2"
-
-    override fun addPerson(
+    override suspend fun addPerson(
         name: String,
         relation: String,
         birthDate: String,
@@ -190,25 +67,25 @@ class FakeFamilyRepository : FamilyRepository {
         isDeceased: Boolean,
         bio: String,
         connections: List<String>
-    ): Person {
-        val newPerson = Person(
+    ): Result<Person> = runCatching {
+        val person = Person(
             id = UUID.randomUUID().toString(),
             name = name,
             initial = name.trim().firstOrNull()?.uppercase() ?: "?",
             relation = relation,
-            accent = nextAccent(),
+            accent = AvatarAccent.entries.random(),
             birthDate = birthDate,
             birthPlace = birthPlace,
             isDeceased = isDeceased,
             bio = bio,
             connections = connections,
-            treePosition = nextTreePosition(connections)
+            treePosition = TreePosition(2, _familyTree.value.members.size)
         )
-        members.add(newPerson)
-        return newPerson
+        _familyTree.update { it.copy(members = it.members + person, memberCount = it.members.size + 1) }
+        person
     }
 
-    override fun updatePerson(
+    override suspend fun updatePerson(
         id: String,
         name: String,
         relation: String,
@@ -217,50 +94,25 @@ class FakeFamilyRepository : FamilyRepository {
         isDeceased: Boolean,
         bio: String,
         connections: List<String>
-    ) {
-        val index = members.indexOfFirst { it.id == id }
-        if (index == -1) return
-        val existing = members[index]
-        members[index] = existing.copy(
-            name = name,
-            initial = name.trim().firstOrNull()?.uppercase() ?: existing.initial,
-            relation = relation,
-            birthDate = birthDate,
-            birthPlace = birthPlace,
-            isDeceased = isDeceased,
-            bio = bio,
-            connections = connections
-        )
-    }
-
-    override fun deletePerson(id: String) {
-        members.removeAll { it.id == id }
-    }
-
-    private fun nextAccent(): AvatarAccent {
-        val accent = accentRotation[accentCursor.value % accentRotation.size]
-        accentCursor.value += 1
-        return accent
-    }
-
-    /**
-     * Ordnet eine neue Person heuristisch im Baum ein: eine Generation unter
-     * der am höchsten stehenden gewählten Verbindung, im nächsten freien
-     * Slot dieser Generation. Ohne Verbindung landet sie auf Höhe von "Ich".
-     */
-    private fun nextTreePosition(connectionNames: List<String>): TreePosition {
-        val connectedGenerations = connectionNames.mapNotNull { name ->
-            members.find { it.name.equals(name, ignoreCase = true) }?.treePosition?.generation
+    ): Result<Unit> = runCatching {
+        _familyTree.update { tree ->
+            tree.copy(
+                members = tree.members.map {
+                    if (it.id == id) {
+                        it.copy(
+                            name = name, relation = relation, birthDate = birthDate,
+                            birthPlace = birthPlace, isDeceased = isDeceased, bio = bio, connections = connections
+                        )
+                    } else it
+                }
+            )
         }
-        val targetGeneration = if (connectedGenerations.isNotEmpty()) {
-            connectedGenerations.max() + 1
-        } else {
-            members.find { it.id == "ich" }?.treePosition?.generation ?: 0
+    }
+
+    override suspend fun deletePerson(id: String): Result<Unit> = runCatching {
+        _familyTree.update { tree ->
+            val remaining = tree.members.filterNot { it.id == id }
+            tree.copy(members = remaining, memberCount = remaining.size)
         }
-        val usedSlots = members
-            .filter { it.treePosition?.generation == targetGeneration }
-            .mapNotNull { it.treePosition?.slot }
-        val nextSlot = (usedSlots.maxOrNull() ?: -1) + 1
-        return TreePosition(targetGeneration, nextSlot)
     }
 }

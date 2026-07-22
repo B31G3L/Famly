@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "931938934539",
+    "project_id": "famly-e5c90",
+    "storage_bucket": "famly-e5c90.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:931938934539:android:c72c43444dfe4409d94c0e",
+        "android_client_info": {
+          "package_name": "com.beigel.famly"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "931938934539-rvajj6h7u0pumtg73m188cbg9cjp41pu.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCAOCySIyxuyRB-XdkKuASrrfWAeRoZd4w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "931938934539-rvajj6h7u0pumtg73m188cbg9cjp41pu.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

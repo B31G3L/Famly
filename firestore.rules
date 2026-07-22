@@ -1,0 +1,41 @@
+rules_version = '2';
+
+// Passend zum Datenmodell von FirestoreFamilyRepository:
+//   users/{uid}                      -> { familyId, displayName }
+//   families/{familyId}              -> { name, ownerId, inviteCode, memberIds: [uid] }
+//   families/{familyId}/persons/{id} -> Person-Felder
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isFamilyMember(familyId) {
+      return isSignedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/families/$(familyId)).data.memberIds;
+    }
+
+    // Jeder Nutzer darf nur sein eigenes users/{uid}-Dokument lesen/schreiben.
+    match /users/{uid} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    match /families/{familyId} {
+      // Lesen/Beitreten (memberIds-Update) darf jeder angemeldete Nutzer,
+      // damit das Auflösen eines Einladungscodes funktioniert, ohne dass
+      // man vorher schon Mitglied sein muss.
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isFamilyMember(familyId) ||
+        (isSignedIn() &&
+          request.resource.data.memberIds.hasAll(resource.data.memberIds) &&
+          request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1);
+      allow delete: if false;
+
+      match /persons/{personId} {
+        allow read, write: if isFamilyMember(familyId);
+      }
+    }
+  }
+}
