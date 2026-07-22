@@ -20,6 +20,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -34,24 +37,45 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.beigel.famly.data.model.Person
+import com.beigel.famly.ui.theme.FamlyChipBackground
+import com.beigel.famly.ui.theme.FamlyChipText
 import com.beigel.famly.ui.theme.FamlyDashedBorder
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyWhite
 
+data class PersonFormResult(
+    val name: String,
+    val relation: String,
+    val birthDate: String,
+    val birthPlace: String,
+    val isDeceased: Boolean,
+    val bio: String,
+    val connections: List<String>
+)
+
 @Composable
 fun AddPersonScreen(
+    existingPerson: Person?,
+    availableConnections: List<Person>,
     onClose: () -> Unit,
-    onSave: () -> Unit
+    onSave: (PersonFormResult) -> Unit,
+    onDelete: (() -> Unit)? = null
 ) {
-    var name by remember { mutableStateOf("") }
-    var relation by remember { mutableStateOf("") }
-    var birthDate by remember { mutableStateOf("") }
-    var birthPlace by remember { mutableStateOf("") }
-    var bio by remember { mutableStateOf("") }
-    var isDeceased by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf(existingPerson?.name.orEmpty()) }
+    var relation by remember { mutableStateOf(existingPerson?.relation.orEmpty()) }
+    var birthDate by remember { mutableStateOf(existingPerson?.birthDate.orEmpty()) }
+    var birthPlace by remember { mutableStateOf(existingPerson?.birthPlace.orEmpty()) }
+    var bio by remember { mutableStateOf(existingPerson?.bio.orEmpty()) }
+    var isDeceased by remember { mutableStateOf(existingPerson?.isDeceased ?: false) }
+    var connections by remember { mutableStateOf(existingPerson?.connections ?: emptyList()) }
+    var showConnectionMenu by remember { mutableStateOf(false) }
+
+    val isEditMode = existingPerson != null
+    val connectionCandidates = availableConnections
+        .filter { it.id != existingPerson?.id && it.name !in connections }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -61,7 +85,7 @@ fun AddPersonScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            androidx.compose.material3.Icon(
+            Icon(
                 imageVector = Icons.Filled.Close,
                 contentDescription = "Schließen",
                 tint = FamlyTextSecondary,
@@ -69,12 +93,27 @@ fun AddPersonScreen(
                     .clickable(onClick = onClose)
                     .size(20.dp)
             )
-            Text("Person hinzufügen", style = MaterialTheme.typography.labelLarge)
+            Text(
+                if (isEditMode) "Person bearbeiten" else "Person hinzufügen",
+                style = MaterialTheme.typography.labelLarge
+            )
             Text(
                 "Speichern",
-                color = FamlyPetrolPrimary,
+                color = if (name.isNotBlank()) FamlyPetrolPrimary else FamlyTextSecondary,
                 style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.clickable(onClick = onSave)
+                modifier = Modifier.clickable(enabled = name.isNotBlank()) {
+                    onSave(
+                        PersonFormResult(
+                            name = name.trim(),
+                            relation = relation.trim(),
+                            birthDate = birthDate.trim(),
+                            birthPlace = birthPlace.trim(),
+                            isDeceased = isDeceased,
+                            bio = bio.trim(),
+                            connections = connections
+                        )
+                    )
+                }
             )
         }
 
@@ -93,7 +132,7 @@ fun AddPersonScreen(
                         .border(1.5.dp, FamlyDashedBorder, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.AddAPhoto,
                         contentDescription = "Foto hinzufügen",
                         tint = FamlyTextSecondary,
@@ -157,17 +196,56 @@ fun AddPersonScreen(
                 )
                 Spacer(modifier = Modifier.padding(top = 8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ConnectionChip(text = "Mama")
-                    ConnectionChip(text = "Papa")
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(100.dp))
-                            .border(1.5.dp, FamlyDashedBorder, RoundedCornerShape(100.dp))
-                            .padding(13.dp, 7.dp)
-                    ) {
-                        Text("+ Hinzufügen", style = MaterialTheme.typography.bodySmall, color = FamlyTextSecondary)
+                    connections.forEach { connectionName ->
+                        ConnectionChip(
+                            text = connectionName,
+                            onRemove = { connections = connections - connectionName }
+                        )
+                    }
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(100.dp))
+                                .border(1.5.dp, FamlyDashedBorder, RoundedCornerShape(100.dp))
+                                .clickable(enabled = connectionCandidates.isNotEmpty()) {
+                                    showConnectionMenu = true
+                                }
+                                .padding(13.dp, 7.dp)
+                        ) {
+                            Text(
+                                "+ Hinzufügen",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = FamlyTextSecondary
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showConnectionMenu,
+                            onDismissRequest = { showConnectionMenu = false }
+                        ) {
+                            connectionCandidates.forEach { candidate ->
+                                DropdownMenuItem(
+                                    text = { Text(candidate.name) },
+                                    onClick = {
+                                        connections = connections + candidate.name
+                                        showConnectionMenu = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
+            }
+
+            if (isEditMode && onDelete != null) {
+                Text(
+                    "Person löschen",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onDelete)
+                        .padding(vertical = 8.dp)
+                )
             }
         }
     }
@@ -203,16 +281,21 @@ private fun FormField(
 }
 
 @Composable
-private fun ConnectionChip(text: String) {
+private fun ConnectionChip(text: String, onRemove: () -> Unit) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(100.dp))
-            .background(com.beigel.famly.ui.theme.FamlyChipBackground)
+            .background(FamlyChipBackground)
             .padding(13.dp, 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text, color = com.beigel.famly.ui.theme.FamlyChipText, style = MaterialTheme.typography.bodySmall)
+        Text(text, color = FamlyChipText, style = MaterialTheme.typography.bodySmall)
         Spacer(modifier = Modifier.padding(start = 4.dp))
-        Text("×", color = com.beigel.famly.ui.theme.FamlyChipText, style = MaterialTheme.typography.bodySmall)
+        Text(
+            "×",
+            color = FamlyChipText,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.clickable(onClick = onRemove)
+        )
     }
 }

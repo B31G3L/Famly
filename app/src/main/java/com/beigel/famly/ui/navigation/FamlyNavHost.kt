@@ -2,14 +2,16 @@ package com.beigel.famly.ui.navigation
 
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.padding
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.runtime.getValue
+import androidx.navigation.navArgument
 import com.beigel.famly.data.repository.FamilyRepository
 import com.beigel.famly.ui.components.FamlyBottomBar
 import com.beigel.famly.ui.components.FamlyBottomDestination
@@ -27,11 +29,13 @@ object FamlyRoutes {
     const val DASHBOARD = "dashboard"
     const val TREE = "tree"
     const val PERSON_DETAIL = "person_detail/{personId}"
-    const val ADD_PERSON = "add_person"
+    const val ADD_PERSON = "add_person?personId={personId}"
     const val INVITE = "invite"
     const val PROFILE = "profile"
 
     fun personDetail(personId: String) = "person_detail/$personId"
+    fun addPerson(personId: String? = null) =
+        if (personId != null) "add_person?personId=$personId" else "add_person"
 }
 
 private val bottomBarRoutes = FamlyBottomDestination.entries.map { it.route }.toSet()
@@ -82,14 +86,15 @@ fun FamlyNavHost(
                     recentlyAdded = repository.getRecentlyAdded(),
                     onOpenTree = { navController.navigate(FamlyRoutes.TREE) },
                     onOpenPerson = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
-                    onAddPerson = { navController.navigate(FamlyRoutes.ADD_PERSON) }
+                    onAddPerson = { navController.navigate(FamlyRoutes.addPerson()) }
                 )
             }
 
             composable(FamlyRoutes.TREE) {
                 TreeScreen(
                     members = repository.getTreeMembers(),
-                    onPersonClick = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) }
+                    onPersonClick = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
+                    onAddPerson = { navController.navigate(FamlyRoutes.addPerson()) }
                 )
             }
 
@@ -100,16 +105,60 @@ fun FamlyNavHost(
                     PersonDetailScreen(
                         person = person,
                         onBack = { navController.popBackStack() },
-                        onEdit = { navController.navigate(FamlyRoutes.ADD_PERSON) },
+                        onEdit = { navController.navigate(FamlyRoutes.addPerson(person.id)) },
                         onInvite = { navController.navigate(FamlyRoutes.INVITE) }
                     )
                 }
             }
 
-            composable(FamlyRoutes.ADD_PERSON) {
+            composable(
+                route = FamlyRoutes.ADD_PERSON,
+                arguments = listOf(
+                    navArgument("personId") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { entry ->
+                val personId = entry.arguments?.getString("personId")
+                val existingPerson = personId?.let { repository.getPersonById(it) }
+
                 AddPersonScreen(
+                    existingPerson = existingPerson,
+                    availableConnections = repository.getTreeMembers(),
                     onClose = { navController.popBackStack() },
-                    onSave = { navController.popBackStack() }
+                    onSave = { result ->
+                        if (existingPerson != null) {
+                            repository.updatePerson(
+                                id = existingPerson.id,
+                                name = result.name,
+                                relation = result.relation,
+                                birthDate = result.birthDate,
+                                birthPlace = result.birthPlace,
+                                isDeceased = result.isDeceased,
+                                bio = result.bio,
+                                connections = result.connections
+                            )
+                        } else {
+                            repository.addPerson(
+                                name = result.name,
+                                relation = result.relation,
+                                birthDate = result.birthDate,
+                                birthPlace = result.birthPlace,
+                                isDeceased = result.isDeceased,
+                                bio = result.bio,
+                                connections = result.connections
+                            )
+                        }
+                        navController.popBackStack()
+                    },
+                    onDelete = if (existingPerson != null) {
+                        {
+                            repository.deletePerson(existingPerson.id)
+                            navController.popBackStack(FamlyRoutes.DASHBOARD, inclusive = false)
+                        }
+                    } else null
                 )
             }
 

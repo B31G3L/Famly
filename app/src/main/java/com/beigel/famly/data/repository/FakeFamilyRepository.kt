@@ -1,11 +1,14 @@
 package com.beigel.famly.data.repository
 
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import com.beigel.famly.data.model.AvatarAccent
 import com.beigel.famly.data.model.FamilyMember
 import com.beigel.famly.data.model.FamilyTree
 import com.beigel.famly.data.model.MemberStatus
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.data.model.TreePosition
+import java.util.UUID
 
 interface FamilyRepository {
     fun getCurrentUserName(): String
@@ -15,8 +18,40 @@ interface FamilyRepository {
     fun getPersonById(id: String): Person?
     fun getFamilyMembers(): List<FamilyMember>
     fun getInviteCode(): String
+
+    /** Legt eine neue Person an und ordnet sie automatisch im Baum ein. */
+    fun addPerson(
+        name: String,
+        relation: String,
+        birthDate: String,
+        birthPlace: String,
+        isDeceased: Boolean,
+        bio: String,
+        connections: List<String>
+    ): Person
+
+    /** Aktualisiert eine bestehende Person (Position im Baum bleibt erhalten). */
+    fun updatePerson(
+        id: String,
+        name: String,
+        relation: String,
+        birthDate: String,
+        birthPlace: String,
+        isDeceased: Boolean,
+        bio: String,
+        connections: List<String>
+    )
+
+    fun deletePerson(id: String)
 }
 
+/**
+ * In-Memory-Repository auf Basis einer Compose-SnapshotStateList.
+ * Da Compose Lesezugriffe auf diese Liste automatisch beobachtet, sorgt jede
+ * Änderung (add/update/delete) dafür, dass alle Screens, die z. B.
+ * getTreeMembers() aufrufen, automatisch neu zeichnen – ganz ohne ViewModel
+ * oder Flow-Umweg.
+ */
 class FakeFamilyRepository : FamilyRepository {
 
     private val oma = Person(
@@ -114,27 +149,118 @@ class FakeFamilyRepository : FamilyRepository {
         treePosition = TreePosition(2, 2)
     )
 
-    private val allMembers = listOf(oma, opa, tanteErika, mama, papa, bruderTom, ich, lena)
+    /** Beobachtbare Liste aller Personen; Reihenfolge = Einfüge-Reihenfolge. */
+    private val members = mutableStateListOf(oma, opa, tanteErika, mama, papa, bruderTom, ich, lena)
+
+    private val accentRotation = AvatarAccent.entries
+    private var accentCursor = mutableStateOf(0)
 
     override fun getCurrentUserName(): String = "Anna"
 
     override fun getFamilyTree(): FamilyTree = FamilyTree(
         id = "familie_mueller",
         name = "Familie Müller",
-        memberCount = 12,
-        members = allMembers
+        memberCount = members.size,
+        members = members
     )
 
-    override fun getRecentlyAdded(): List<Person> = listOf(oma, lena)
+    override fun getRecentlyAdded(): List<Person> =
+        members.filter { it.id != "ich" }.takeLast(2).reversed()
 
-    override fun getTreeMembers(): List<Person> = allMembers
+    override fun getTreeMembers(): List<Person> = members
 
-    override fun getPersonById(id: String): Person? = allMembers.find { it.id == id }
+    override fun getPersonById(id: String): Person? = members.find { it.id == id }
 
-    override fun getFamilyMembers(): List<FamilyMember> = listOf(
-        FamilyMember(ich.copy(name = "Ich"), "Besitzer", MemberStatus.OWNER),
-        FamilyMember(lena, "Mitglied", MemberStatus.PENDING)
-    )
+    override fun getFamilyMembers(): List<FamilyMember> {
+        val owner = members.find { it.id == "ich" }
+        val others = members.filter { it.id != "ich" }
+        return buildList {
+            if (owner != null) add(FamilyMember(owner, "Besitzer", MemberStatus.OWNER))
+            others.forEach { add(FamilyMember(it, "Mitglied", MemberStatus.PENDING)) }
+        }
+    }
 
     override fun getInviteCode(): String = "OFFSHOOT-7F3K2"
+
+    override fun addPerson(
+        name: String,
+        relation: String,
+        birthDate: String,
+        birthPlace: String,
+        isDeceased: Boolean,
+        bio: String,
+        connections: List<String>
+    ): Person {
+        val newPerson = Person(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            initial = name.trim().firstOrNull()?.uppercase() ?: "?",
+            relation = relation,
+            accent = nextAccent(),
+            birthDate = birthDate,
+            birthPlace = birthPlace,
+            isDeceased = isDeceased,
+            bio = bio,
+            connections = connections,
+            treePosition = nextTreePosition(connections)
+        )
+        members.add(newPerson)
+        return newPerson
+    }
+
+    override fun updatePerson(
+        id: String,
+        name: String,
+        relation: String,
+        birthDate: String,
+        birthPlace: String,
+        isDeceased: Boolean,
+        bio: String,
+        connections: List<String>
+    ) {
+        val index = members.indexOfFirst { it.id == id }
+        if (index == -1) return
+        val existing = members[index]
+        members[index] = existing.copy(
+            name = name,
+            initial = name.trim().firstOrNull()?.uppercase() ?: existing.initial,
+            relation = relation,
+            birthDate = birthDate,
+            birthPlace = birthPlace,
+            isDeceased = isDeceased,
+            bio = bio,
+            connections = connections
+        )
+    }
+
+    override fun deletePerson(id: String) {
+        members.removeAll { it.id == id }
+    }
+
+    private fun nextAccent(): AvatarAccent {
+        val accent = accentRotation[accentCursor.value % accentRotation.size]
+        accentCursor.value += 1
+        return accent
+    }
+
+    /**
+     * Ordnet eine neue Person heuristisch im Baum ein: eine Generation unter
+     * der am höchsten stehenden gewählten Verbindung, im nächsten freien
+     * Slot dieser Generation. Ohne Verbindung landet sie auf Höhe von "Ich".
+     */
+    private fun nextTreePosition(connectionNames: List<String>): TreePosition {
+        val connectedGenerations = connectionNames.mapNotNull { name ->
+            members.find { it.name.equals(name, ignoreCase = true) }?.treePosition?.generation
+        }
+        val targetGeneration = if (connectedGenerations.isNotEmpty()) {
+            connectedGenerations.max() + 1
+        } else {
+            members.find { it.id == "ich" }?.treePosition?.generation ?: 0
+        }
+        val usedSlots = members
+            .filter { it.treePosition?.generation == targetGeneration }
+            .mapNotNull { it.treePosition?.slot }
+        val nextSlot = (usedSlots.maxOrNull() ?: -1) + 1
+        return TreePosition(targetGeneration, nextSlot)
+    }
 }
