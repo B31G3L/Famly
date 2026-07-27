@@ -7,8 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Repository-Schicht für den Familienstammbaum.
  *
- * Anders als beim alten [FakeFamilyRepository] sind Lesezugriffe hier
- * reaktiv (StateFlow), weil die Daten per Firestore-Snapshot-Listener
+ * Lesezugriffe sind reaktiv (StateFlow), weil die Daten per Firestore-Snapshot-Listener
  * hereinkommen und sich jederzeit von einem anderen Gerät aus ändern
  * können. Schreibzugriffe sind suspend-Funktionen, da es echte
  * Netzwerk-Roundtrips sind, die auch fehlschlagen können (Result<T>).
@@ -36,27 +35,33 @@ interface FamilyRepository {
     /** Tritt einer bestehenden Familie über deren Einladungscode bei. */
     suspend fun joinFamilyWithCode(code: String): Result<Unit>
 
-    /** Legt eine neue Person an und ordnet sie automatisch im Baum ein. */
+    /**
+     * Legt eine neue Person an, ausgehend von einer bestehenden Person
+     * ([relativeOfId]) und einem [relationType] (Mama/Papa/Tochter/Sohn aus
+     * Sicht dieser Person). Baum-Position UND die Bezeichnung relativ zu
+     * "Ich" (z. B. "Großmutter", "Onkel") werden daraus automatisch
+     * abgeleitet - siehe [FirestoreFamilyRepository].
+     */
     suspend fun addPerson(
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
+        deathDate: String,
         bio: String,
-        connections: List<String>
+        relativeOfId: String,
+        relationType: com.beigel.famly.data.model.RelationType
     ): Result<Person>
 
-    /** Aktualisiert eine bestehende Person (Position im Baum bleibt erhalten). */
+    /** Aktualisiert eine bestehende Person (Position, Beziehung, Verknüpfungen bleiben erhalten). */
     suspend fun updatePerson(
         id: String,
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
-        bio: String,
-        connections: List<String>
+        deathDate: String,
+        bio: String
     ): Result<Unit>
 
     suspend fun deletePerson(id: String): Result<Unit>

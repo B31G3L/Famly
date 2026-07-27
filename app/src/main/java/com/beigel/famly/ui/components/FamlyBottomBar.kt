@@ -59,7 +59,8 @@ fun FamlyBottomBar(
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
         FamlyBottomDestination.entries.forEach { destination ->
-            val selected = currentRoute == destination.route
+            val selected = currentRoute == destination.route ||
+                currentRoute?.startsWith("${destination.route}?") == true
             Column(
                 modifier = Modifier
                     .clickable { onNavigate(destination.route) }

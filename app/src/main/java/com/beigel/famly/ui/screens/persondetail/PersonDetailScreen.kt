@@ -42,7 +42,8 @@ fun PersonDetailScreen(
     person: Person,
     onBack: () -> Unit,
     onEdit: () -> Unit,
-    onInvite: () -> Unit
+    onInvite: () -> Unit,
+    onAddRelative: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -92,6 +93,9 @@ fun PersonDetailScreen(
                     value = if (person.isDeceased) "Verstorben" else "Lebt",
                     valueColor = if (person.isDeceased) FamlyTextSecondary else FamlyStatusAlive
                 )
+                if (person.isDeceased && person.deathDate.isNotBlank()) {
+                    InfoRow(label = "Todesdatum", value = person.deathDate)
+                }
             }
 
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -104,6 +108,12 @@ fun PersonDetailScreen(
                 FamlyPrimaryButton(text = "Bearbeiten", modifier = Modifier.weight(1f), onClick = onEdit)
                 FamlySecondaryButton(text = "Einladen", modifier = Modifier.weight(1f), onClick = onInvite)
             }
+
+            FamlySecondaryButton(
+                text = "+ Verwandte:n hinzufügen",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onAddRelative
+            )
         }
     }
 }

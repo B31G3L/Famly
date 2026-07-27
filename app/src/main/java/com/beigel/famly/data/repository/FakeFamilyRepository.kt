@@ -3,6 +3,7 @@ package com.beigel.famly.data.repository
 import com.beigel.famly.data.model.AvatarAccent
 import com.beigel.famly.data.model.FamilyTree
 import com.beigel.famly.data.model.Person
+import com.beigel.famly.data.model.RelationType
 import com.beigel.famly.data.model.TreePosition
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,13 +62,21 @@ class FakeFamilyRepository : FamilyRepository {
 
     override suspend fun addPerson(
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
+        deathDate: String,
         bio: String,
-        connections: List<String>
+        relativeOfId: String,
+        relationType: RelationType
     ): Result<Person> = runCatching {
+        val members = _familyTree.value.members
+        val relativeOf = members.find { it.id == relativeOfId } ?: error("Ausgangsperson nicht gefunden")
+        val targetGeneration = (relativeOf.treePosition?.generation ?: 0) + relationType.generationOffset
+        val usedSlots = members.filter { it.treePosition?.generation == targetGeneration }.mapNotNull { it.treePosition?.slot }
+        val treePosition = TreePosition(targetGeneration, (usedSlots.maxOrNull() ?: -1) + 1)
+        val relation = inferRelationToSelf(relativeOf.relation, relationType)
+
         val person = Person(
             id = UUID.randomUUID().toString(),
             name = name,
@@ -77,9 +86,10 @@ class FakeFamilyRepository : FamilyRepository {
             birthDate = birthDate,
             birthPlace = birthPlace,
             isDeceased = isDeceased,
+            deathDate = deathDate,
             bio = bio,
-            connections = connections,
-            treePosition = TreePosition(2, _familyTree.value.members.size)
+            connections = listOf(relativeOf.name),
+            treePosition = treePosition
         )
         _familyTree.update { it.copy(members = it.members + person, memberCount = it.members.size + 1) }
         person
@@ -88,20 +98,19 @@ class FakeFamilyRepository : FamilyRepository {
     override suspend fun updatePerson(
         id: String,
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
-        bio: String,
-        connections: List<String>
+        deathDate: String,
+        bio: String
     ): Result<Unit> = runCatching {
         _familyTree.update { tree ->
             tree.copy(
                 members = tree.members.map {
                     if (it.id == id) {
                         it.copy(
-                            name = name, relation = relation, birthDate = birthDate,
-                            birthPlace = birthPlace, isDeceased = isDeceased, bio = bio, connections = connections
+                            name = name, birthDate = birthDate, birthPlace = birthPlace,
+                            isDeceased = isDeceased, deathDate = deathDate, bio = bio
                         )
                     } else it
                 }
@@ -109,7 +118,25 @@ class FakeFamilyRepository : FamilyRepository {
         }
     }
 
+    private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
+        val addsParent = type.generationOffset < 0
+        fun pick(female: String, male: String) = if (type.isFemale) female else male
+
+        return when (baseRelation) {
+            "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")
+            "Mutter", "Vater" -> if (addsParent) pick("Großmutter", "Großvater") else pick("Schwester", "Bruder")
+            "Großmutter", "Großvater" -> if (addsParent) pick("Urgroßmutter", "Urgroßvater") else pick("Tante", "Onkel")
+            "Schwester", "Bruder" -> if (!addsParent) pick("Nichte", "Neffe") else baseRelation
+            "Tante", "Onkel" -> if (!addsParent) pick("Cousine", "Cousin") else baseRelation
+            "Tochter", "Sohn" -> if (!addsParent) pick("Enkelin", "Enkel") else "Partner:in"
+            else -> type.label
+        }
+    }
+
     override suspend fun deletePerson(id: String): Result<Unit> = runCatching {
+        if (id == "ich") {
+            error("Du kannst dich selbst nicht aus dem Baum löschen")
+        }
         _familyTree.update { tree ->
             val remaining = tree.members.filterNot { it.id == id }
             tree.copy(members = remaining, memberCount = remaining.size)

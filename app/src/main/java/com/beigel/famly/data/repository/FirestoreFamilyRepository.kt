@@ -4,6 +4,7 @@ import com.beigel.famly.data.auth.AuthRepository
 import com.beigel.famly.data.model.AvatarAccent
 import com.beigel.famly.data.model.FamilyTree
 import com.beigel.famly.data.model.Person
+import com.beigel.famly.data.model.RelationType
 import com.beigel.famly.data.model.TreePosition
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
@@ -33,9 +35,8 @@ private const val FIELD_INVITE_CODE = "inviteCode"
  *  families/{familyId}/persons/{id} -> Person-Felder (siehe [PersonMapper])
  *
  * Jeder Nutzer gehört genau einer Familie an. Die eigene Person im Baum
- * bekommt konventionsgemäß die feste ID "ich" (wie schon im
- * FakeFamilyRepository), damit z. B. die Baum-Darstellung unverändert
- * funktioniert.
+ * bekommt konventionsgemäß die feste ID "ich", damit z. B. die
+ * Baum-Darstellung unverändert funktioniert.
  */
 class FirestoreFamilyRepository(
     private val firestore: FirebaseFirestore,
@@ -119,7 +120,41 @@ class FirestoreFamilyRepository(
                     _currentUserName.value = it.name.substringBefore(" ")
                 }
                 _isLoading.value = false
+                // Selbstheilung: "Ich" darf zwar nicht mehr gelöscht werden,
+                // falls das Dokument aber trotzdem einmal fehlt (z. B. aus der
+                // Zeit vor diesem Schutz), wird es hier automatisch neu angelegt.
+                if (snapshot != null && members.none { it.id == SELF_PERSON_ID }) {
+                    recreateSelfPersonIfMissing(familyId)
+                }
             }
+    }
+
+    private fun recreateSelfPersonIfMissing(familyId: String) {
+        val user = authRepository.currentUser.value ?: return
+        externalScope.launch {
+            val personsRef = firestore.collection(COLLECTION_FAMILIES).document(familyId)
+                .collection(COLLECTION_PERSONS)
+            // Doppelt prüfen (nicht nur auf den zuletzt empfangenen Snapshot
+            // verlassen), um ein Wettrennen mit einem parallel laufenden
+            // zweiten Gerät/Listener zu vermeiden.
+            val existing = runCatching { personsRef.document(SELF_PERSON_ID).get().await() }.getOrNull()
+            if (existing?.exists() == true) return@launch
+
+            val displayName = user.displayName?.takeIf { it.isNotBlank() }
+                ?: _currentUserName.value.takeIf { it.isNotBlank() }
+                ?: "Ich"
+            val selfPerson = Person(
+                id = SELF_PERSON_ID,
+                name = displayName,
+                initial = displayName.trim().firstOrNull()?.uppercase() ?: "?",
+                relation = "Ich",
+                accent = AvatarAccent.PETROL,
+                treePosition = TreePosition(generation = 2, slot = 0)
+            )
+            runCatching {
+                personsRef.document(SELF_PERSON_ID).set(selfPerson.toFirestoreMap()).await()
+            }
+        }
     }
 
     private fun detachFamilyListeners() {
@@ -204,16 +239,26 @@ class FirestoreFamilyRepository(
 
     override suspend fun addPerson(
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
+        deathDate: String,
         bio: String,
-        connections: List<String>
+        relativeOfId: String,
+        relationType: RelationType
     ): Result<Person> = runCatching {
         val familyId = _familyId.value ?: error("Keine Familie zugeordnet")
         val members = _familyTree.value.members
         val id = UUID.randomUUID().toString()
+
+        val relativeOf = members.find { it.id == relativeOfId } ?: error("Ausgangsperson nicht gefunden")
+        val treePosition = positionRelativeTo(members, relativeOf, relationType)
+        val relation = inferRelationToSelf(relativeOf.relation, relationType)
+        // Mama/Papa: die neue Person IST ein Elternteil von relativeOf ->
+        // die Rück-Referenz kommt auf relativeOf (relativeOf.parentIds += id).
+        // Tochter/Sohn: die neue Person HAT relativeOf als Elternteil ->
+        // die Referenz kommt direkt auf die neue Person.
+        val newPersonIsParent = relationType.generationOffset < 0
 
         val person = Person(
             id = id,
@@ -224,15 +269,26 @@ class FirestoreFamilyRepository(
             birthDate = birthDate,
             birthPlace = birthPlace,
             isDeceased = isDeceased,
+            deathDate = deathDate,
             bio = bio,
-            connections = connections,
-            treePosition = nextTreePosition(members, connections)
+            connections = listOf(relativeOf.name),
+            parentIds = if (newPersonIsParent) emptyList() else listOf(relativeOf.id),
+            treePosition = treePosition
         )
 
-        firestore.collection(COLLECTION_FAMILIES).document(familyId)
-            .collection(COLLECTION_PERSONS).document(id)
-            .set(person.toFirestoreMap())
-            .await()
+        val familyPersonsRef = firestore.collection(COLLECTION_FAMILIES).document(familyId)
+            .collection(COLLECTION_PERSONS)
+
+        firestore.runBatch { batch ->
+            batch.set(familyPersonsRef.document(id), person.toFirestoreMap())
+            if (newPersonIsParent) {
+                batch.update(
+                    familyPersonsRef.document(relativeOf.id),
+                    "parentIds",
+                    FieldValue.arrayUnion(id)
+                )
+            }
+        }.await()
 
         person
     }
@@ -240,12 +296,11 @@ class FirestoreFamilyRepository(
     override suspend fun updatePerson(
         id: String,
         name: String,
-        relation: String,
         birthDate: String,
         birthPlace: String,
         isDeceased: Boolean,
-        bio: String,
-        connections: List<String>
+        deathDate: String,
+        bio: String
     ): Result<Unit> = runCatching {
         val familyId = _familyId.value ?: error("Keine Familie zugeordnet")
         val existing = _familyTree.value.members.find { it.id == id } ?: error("Person nicht gefunden")
@@ -253,12 +308,11 @@ class FirestoreFamilyRepository(
         val updated = existing.copy(
             name = name,
             initial = name.trim().firstOrNull()?.uppercase() ?: existing.initial,
-            relation = relation,
             birthDate = birthDate,
             birthPlace = birthPlace,
             isDeceased = isDeceased,
-            bio = bio,
-            connections = connections
+            deathDate = deathDate,
+            bio = bio
         )
 
         firestore.collection(COLLECTION_FAMILIES).document(familyId)
@@ -268,6 +322,9 @@ class FirestoreFamilyRepository(
     }
 
     override suspend fun deletePerson(id: String): Result<Unit> = runCatching {
+        if (id == SELF_PERSON_ID) {
+            error("Du kannst dich selbst nicht aus dem Baum löschen")
+        }
         val familyId = _familyId.value ?: error("Keine Familie zugeordnet")
         firestore.collection(COLLECTION_FAMILIES).document(familyId)
             .collection(COLLECTION_PERSONS).document(id)
@@ -281,25 +338,42 @@ class FirestoreFamilyRepository(
     }
 
     /**
-     * Ordnet eine neue Person heuristisch im Baum ein: eine Generation unter
-     * der am höchsten stehenden gewählten Verbindung, im nächsten freien
-     * Slot dieser Generation. Ohne Verbindung landet sie auf Höhe von "Ich".
-     * (Gleiche Logik wie zuvor im FakeFamilyRepository.)
+     * Positioniert eine neue Person direkt relativ zu [relativeOf] anhand
+     * des gewählten [RelationType] (Flow: Person anklicken -> "Verwandte
+     * hinzufügen"). Elternteil = eine Generation höher, Kind = eine
+     * Generation tiefer, Partner/Geschwister = gleiche Generation.
      */
-    private fun nextTreePosition(members: List<Person>, connectionNames: List<String>): TreePosition {
-        val connectedGenerations = connectionNames.mapNotNull { name ->
-            members.find { it.name.equals(name, ignoreCase = true) }?.treePosition?.generation
-        }
-        val targetGeneration = if (connectedGenerations.isNotEmpty()) {
-            connectedGenerations.max() + 1
-        } else {
-            members.find { it.id == SELF_PERSON_ID }?.treePosition?.generation ?: 0
-        }
+    private fun positionRelativeTo(members: List<Person>, relativeOf: Person, relationType: RelationType): TreePosition {
+        val baseGeneration = relativeOf.treePosition?.generation ?: 0
+        val targetGeneration = baseGeneration + relationType.generationOffset
         val usedSlots = members
             .filter { it.treePosition?.generation == targetGeneration }
             .mapNotNull { it.treePosition?.slot }
         val nextSlot = (usedSlots.maxOrNull() ?: -1) + 1
         return TreePosition(targetGeneration, nextSlot)
+    }
+
+    /**
+     * Leitet die Bezeichnung der neuen Person relativ zu "Ich" automatisch her,
+     * aus der Beziehung der Ausgangsperson zu "Ich" ([baseRelation]) plus dem
+     * gewählten [RelationType] (Mama/Papa/Tochter/Sohn aus Sicht der
+     * Ausgangsperson). Deckt die gängigen Verwandtschaftsgrade ab; für
+     * exotischere Fälle (z. B. "Tochter" von "Tochter" in väterlicher statt
+     * mütterlicher Linie) fällt es auf eine generische Bezeichnung zurück.
+     */
+    private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
+        val addsParent = type.generationOffset < 0
+        fun pick(female: String, male: String) = if (type.isFemale) female else male
+
+        return when (baseRelation) {
+            "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")
+            "Mutter", "Vater" -> if (addsParent) pick("Großmutter", "Großvater") else pick("Schwester", "Bruder")
+            "Großmutter", "Großvater" -> if (addsParent) pick("Urgroßmutter", "Urgroßvater") else pick("Tante", "Onkel")
+            "Schwester", "Bruder" -> if (!addsParent) pick("Nichte", "Neffe") else baseRelation
+            "Tante", "Onkel" -> if (!addsParent) pick("Cousine", "Cousin") else baseRelation
+            "Tochter", "Sohn" -> if (!addsParent) pick("Enkelin", "Enkel") else "Partner:in"
+            else -> type.label
+        }
     }
 
     private fun generateInviteCode(): String {

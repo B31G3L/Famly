@@ -1,5 +1,6 @@
 package com.beigel.famly.ui.navigation
 
+import android.widget.Toast
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -7,6 +8,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.padding
 import androidx.navigation.NavHostController
@@ -35,15 +37,17 @@ import kotlinx.coroutines.launch
 object FamlyRoutes {
     const val ONBOARDING = "onboarding"
     const val DASHBOARD = "dashboard"
-    const val TREE = "tree"
+    const val TREE = "tree?focusPersonId={focusPersonId}"
     const val PERSON_DETAIL = "person_detail/{personId}"
-    const val ADD_PERSON = "add_person?personId={personId}"
+    const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}"
     const val INVITE = "invite"
     const val PROFILE = "profile"
 
     fun personDetail(personId: String) = "person_detail/$personId"
-    fun addPerson(personId: String? = null) =
-        if (personId != null) "add_person?personId=$personId" else "add_person"
+    fun addPerson(personId: String? = null, relativeOf: String? = null) =
+        "add_person?personId=${personId ?: ""}&relativeOf=${relativeOf ?: ""}"
+    fun addRelativeTo(personId: String) = addPerson(relativeOf = personId)
+    fun tree(focusPersonId: String? = null) = "tree?focusPersonId=${focusPersonId ?: ""}"
 }
 
 private val bottomBarRoutes = FamlyBottomDestination.entries.map { it.route }.toSet()
@@ -60,6 +64,7 @@ fun FamlyNavHost(
     val currentRoute = backStackEntry?.destination?.route
     val coroutineScope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     val familyTree by familyRepository.familyTree.collectAsState()
     val currentUserName by familyRepository.currentUserName.collectAsState()
@@ -76,13 +81,34 @@ fun FamlyNavHost(
         )
     }
 
+    // Nach dem Anlegen/Bearbeiten einer Person direkt zum Baum, mit dieser
+    // Person mittig fokussiert, statt einfach nur zurückzunavigieren.
+    // WICHTIG: dasselbe saveState/restoreState-Muster wie die Bottom-Bar
+    // weiter unten verwenden - sonst gerät der interne Back-Stack der
+    // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
+    // danach nicht mehr zuverlässig.
+    fun goToTreeFocusedOn(personId: String) {
+        navController.navigate(FamlyRoutes.tree(focusPersonId = personId)) {
+            popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     Scaffold(
         bottomBar = {
-            if (currentRoute in bottomBarRoutes) {
+            if (currentRoute in bottomBarRoutes ||
+                bottomBarRoutes.any { currentRoute?.startsWith("$it?") == true }
+            ) {
                 FamlyBottomBar(
                     currentRoute = currentRoute,
                     onNavigate = { route ->
-                        navController.navigate(route) {
+                        val resolvedRoute = if (route == FamlyBottomDestination.TREE.route) {
+                            FamlyRoutes.tree()
+                        } else {
+                            route
+                        }
+                        navController.navigate(resolvedRoute) {
                             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
                             launchSingleTop = true
                             restoreState = true
@@ -112,17 +138,28 @@ fun FamlyNavHost(
                     userName = currentUserName,
                     familyTree = familyTree,
                     recentlyAdded = recentlyAdded,
-                    onOpenTree = { navController.navigate(FamlyRoutes.TREE) },
+                    onOpenTree = { navController.navigate(FamlyRoutes.tree()) },
                     onOpenPerson = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
-                    onAddPerson = { navController.navigate(FamlyRoutes.addPerson()) }
+                    onOpenSelf = { navController.navigate(FamlyRoutes.personDetail(SELF_PERSON_ID)) }
                 )
             }
 
-            composable(FamlyRoutes.TREE) {
+            composable(
+                route = FamlyRoutes.TREE,
+                arguments = listOf(
+                    navArgument("focusPersonId") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { entry ->
+                val focusPersonId = entry.arguments?.getString("focusPersonId")?.takeIf { it.isNotBlank() }
                 TreeScreen(
                     members = members,
                     onPersonClick = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
-                    onAddPerson = { navController.navigate(FamlyRoutes.addPerson()) }
+                    onOpenSelf = { navController.navigate(FamlyRoutes.personDetail(SELF_PERSON_ID)) },
+                    focusPersonId = focusPersonId
                 )
             }
 
@@ -133,8 +170,9 @@ fun FamlyNavHost(
                     PersonDetailScreen(
                         person = person,
                         onBack = { navController.popBackStack() },
-                        onEdit = { navController.navigate(FamlyRoutes.addPerson(person.id)) },
-                        onInvite = { navController.navigate(FamlyRoutes.INVITE) }
+                        onEdit = { navController.navigate(FamlyRoutes.addPerson(personId = person.id)) },
+                        onInvite = { navController.navigate(FamlyRoutes.INVITE) },
+                        onAddRelative = { navController.navigate(FamlyRoutes.addRelativeTo(person.id)) }
                     )
                 }
             }
@@ -146,15 +184,25 @@ fun FamlyNavHost(
                         type = NavType.StringType
                         nullable = true
                         defaultValue = null
+                    },
+                    navArgument("relativeOf") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
                     }
                 )
             ) { entry ->
-                val personId = entry.arguments?.getString("personId")
+                val personId = entry.arguments?.getString("personId")?.takeIf { it.isNotBlank() }
+                val relativeOfId = entry.arguments?.getString("relativeOf")?.takeIf { it.isNotBlank() }
                 val existingPerson = members.find { it.id == personId }
+                val relativeOfPerson = members.find { it.id == relativeOfId }
+                // "Ich" darf nie löschbar sein - egal auf welchem Weg das Formular
+                // erreicht wurde.
+                val canDelete = existingPerson != null && existingPerson.id != SELF_PERSON_ID
 
                 AddPersonScreen(
                     existingPerson = existingPerson,
-                    availableConnections = members,
+                    relativeOf = relativeOfPerson,
                     onClose = { navController.popBackStack() },
                     onSave = { result ->
                         coroutineScope.launch {
@@ -162,32 +210,56 @@ fun FamlyNavHost(
                                 familyRepository.updatePerson(
                                     id = existingPerson.id,
                                     name = result.name,
-                                    relation = result.relation,
                                     birthDate = result.birthDate,
                                     birthPlace = result.birthPlace,
                                     isDeceased = result.isDeceased,
-                                    bio = result.bio,
-                                    connections = result.connections
-                                )
-                            } else {
+                                    deathDate = result.deathDate,
+                                    bio = result.bio
+                                ).onSuccess {
+                                    goToTreeFocusedOn(existingPerson.id)
+                                }.onFailure { error ->
+                                    Toast.makeText(
+                                        context,
+                                        "Speichern fehlgeschlagen: ${error.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } else if (relativeOfPerson != null && result.relationType != null) {
                                 familyRepository.addPerson(
                                     name = result.name,
-                                    relation = result.relation,
                                     birthDate = result.birthDate,
                                     birthPlace = result.birthPlace,
                                     isDeceased = result.isDeceased,
+                                    deathDate = result.deathDate,
                                     bio = result.bio,
-                                    connections = result.connections
-                                )
+                                    relativeOfId = relativeOfPerson.id,
+                                    relationType = result.relationType
+                                ).onSuccess { newPerson ->
+                                    goToTreeFocusedOn(newPerson.id)
+                                }.onFailure { error ->
+                                    Toast.makeText(
+                                        context,
+                                        "Speichern fehlgeschlagen: ${error.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
-                            navController.popBackStack()
                         }
                     },
-                    onDelete = if (existingPerson != null) {
+                    onDelete = if (canDelete) {
                         {
                             coroutineScope.launch {
-                                familyRepository.deletePerson(existingPerson.id)
-                                navController.popBackStack(FamlyRoutes.DASHBOARD, inclusive = false)
+                                familyRepository.deletePerson(existingPerson!!.id)
+                                    .onSuccess {
+                                        navController.popBackStack(FamlyRoutes.DASHBOARD, inclusive = false)
+                                    }
+                                    .onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            "Löschen fehlgeschlagen: ${error.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                             }
                         }
                     } else null

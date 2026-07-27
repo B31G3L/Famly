@@ -1,6 +1,8 @@
 package com.beigel.famly
 
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -18,6 +20,8 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.launch
 
+private const val TAG = "FamlyStartup"
+
 class MainActivity : ComponentActivity() {
 
     private val appContainer by lazy { (application as FamlyApplication).appContainer }
@@ -29,9 +33,21 @@ class MainActivity : ComponentActivity() {
         // Anonyme Anmeldung + Familie sicherstellen, noch bevor die erste
         // Compose-Frame Firestore-Daten braucht. Läuft im Hintergrund weiter,
         // die UI zeigt bis dahin einfach einen leeren/kurz nachladenden Zustand.
+        // WICHTIG: Fehler hier werden abgefangen und sichtbar gemacht (Log +
+        // Toast), statt die App im Ladezustand hängen zu lassen oder
+        // stillschweigend abzustürzen.
         lifecycleScope.launch {
-            appContainer.authRepository.signInAnonymouslyIfNeeded()
-            appContainer.familyRepository.ensureFamilyForCurrentUser()
+            runCatching {
+                appContainer.authRepository.signInAnonymouslyIfNeeded().getOrThrow()
+                appContainer.familyRepository.ensureFamilyForCurrentUser()
+            }.onFailure { error ->
+                Log.e(TAG, "Anmeldung/Familie anlegen fehlgeschlagen", error)
+                Toast.makeText(
+                    this@MainActivity,
+                    "Start fehlgeschlagen: ${error.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
 
         setContent {
@@ -49,12 +65,21 @@ class MainActivity : ComponentActivity() {
 
     private fun triggerGoogleSignIn() {
         lifecycleScope.launch {
-            val idToken = requestGoogleIdToken() ?: return@launch
-            appContainer.authRepository.signInWithGoogleIdToken(idToken)
-            // Bereits vorhandene (ggf. anonym angelegte) Familie bleibt durch
-            // das Verknüpfen des Kontos erhalten – kein neues ensureFamily nötig,
-            // aber schadet nicht, falls doch noch keine Familie existiert.
-            appContainer.familyRepository.ensureFamilyForCurrentUser()
+            runCatching {
+                val idToken = requestGoogleIdToken() ?: return@launch
+                appContainer.authRepository.signInWithGoogleIdToken(idToken).getOrThrow()
+                // Bereits vorhandene (ggf. anonym angelegte) Familie bleibt durch
+                // das Verknüpfen des Kontos erhalten – kein neues ensureFamily nötig,
+                // aber schadet nicht, falls doch noch keine Familie existiert.
+                appContainer.familyRepository.ensureFamilyForCurrentUser()
+            }.onFailure { error ->
+                Log.e(TAG, "Google-Anmeldung fehlgeschlagen", error)
+                Toast.makeText(
+                    this@MainActivity,
+                    "Anmeldung fehlgeschlagen: ${error.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
