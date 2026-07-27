@@ -1,5 +1,8 @@
 package com.beigel.famly.ui.screens.tree
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -9,9 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,15 +28,22 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -51,37 +59,27 @@ import com.beigel.famly.ui.theme.FamlyTextPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyTreeLine
 import com.beigel.famly.ui.theme.FamlyWhite
-import kotlin.math.max
+import kotlinx.coroutines.launch
 import kotlin.math.min
 
 private val TreeCanvasBackground = Color(0xFFFAF6EF)
-private val CardW = 148.dp
-private val CardH = 138.dp
-private val GapX = 28.dp
-private val GapY = 90.dp
-private const val MIN_SCALE = 0.4f
-private const val MAX_SCALE = 1.4f
-
-private data class TreeNodeLayout(
-    val person: Person,
-    val left: androidx.compose.ui.unit.Dp,
-    val top: androidx.compose.ui.unit.Dp,
-    val color: Color
-)
-
-private data class TreeSegment(
-    val from: Offset,
-    val to: Offset
-)
+private val LineWidth = 1.6.dp
+private val PartnerLineWidth = 2.2.dp
+private val LineCornerRadius = 12.dp
+private const val MIN_SCALE = 0.25f
+private const val MAX_SCALE = 1.6f
+private const val FOCUS_SCALE = 0.9f
+private const val FOCUS_ANIMATION_MS = 480
 
 /**
- * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch),
- * analog zum "Famly_dc"-Handoff. Personen werden anhand von generation/slot
- * aus [Person.treePosition] platziert. Verbindungslinien folgen klassischer
- * Stammbaum-Optik: Elternpaare werden waagrecht verbunden, darunter hängen
- * die Kinder mittig an einer gemeinsamen Sammel-Linie (abgeleitet aus
- * [Person.parentIds]). Für ältere Einträge ohne parentIds greift ein
- * Fallback über das generische [Person.connections]-Feld.
+ * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch).
+ * Positionen und Verbindungslinien kommen komplett aus [buildTreeLayout] -
+ * dieser Screen ist reine Darstellung.
+ *
+ * [focusPersonId] darf eine Person benennen, die noch NICHT in [members]
+ * enthalten ist (z. B. direkt nach dem Speichern, bevor der Firestore-Snapshot
+ * durch ist). Der Screen wartet in dem Fall und fährt die Person an, sobald sie
+ * auftaucht - statt den Fokus stillschweigend zu verwerfen.
  */
 @Composable
 fun TreeScreen(
@@ -91,127 +89,23 @@ fun TreeScreen(
     focusPersonId: String? = null,
     selfPersonId: String = "ich"
 ) {
-    val placed = members.filter { it.treePosition != null }
-    val byGeneration = placed.groupBy { it.treePosition!!.generation }.toSortedMap()
-    val maxSlotsInRow = byGeneration.values.maxOfOrNull { row -> row.size } ?: 1
-    val rowWidthDp = CardW * maxSlotsInRow + GapX * max(0, maxSlotsInRow - 1)
+    val layout = remember(members) { buildTreeLayout(members) }
+    val scope = rememberCoroutineScope()
+    val scale = remember { Animatable(FOCUS_SCALE) }
+    val offsetX = remember { Animatable(0f) }
+    val offsetY = remember { Animatable(0f) }
 
-    val nodes = remember(placed) {
-        byGeneration.flatMap { (generation, row) ->
-            val sorted = row.sortedBy { it.treePosition!!.slot }
-            val thisRowWidth = CardW * sorted.size + GapX * max(0, sorted.size - 1)
-            val startX = (rowWidthDp - thisRowWidth) / 2
-            sorted.mapIndexed { index, person ->
-                TreeNodeLayout(
-                    person = person,
-                    left = startX + (CardW + GapX) * index,
-                    top = (CardH + GapY) * generation,
-                    color = FamlyGenColors[generation.mod(FamlyGenColors.size)]
-                )
-            }
-        }
-    }
-
-    // Klassische Stammbaum-Optik:
-    // - Eltern(paare) werden auf Höhe der Kartenmitte waagrecht verbunden.
-    // - Von der Mitte dieser Paar-Linie (bzw. direkt vom einzelnen Elternteil,
-    //   falls nur einer bekannt ist) geht ein Stamm nach unten zu einer
-    //   Sammel-Linie auf halber Höhe zwischen Eltern- und Kinder-Reihe.
-    // - Von der Sammel-Linie zweigen senkrechte Linien zu jedem Kind ab.
-    // Gruppiert wird über [Person.parentIds] (Geschwister mit demselben
-    // Eltern-Set landen automatisch am selben Stamm).
-    val segments = remember(nodes) {
-        val nodesById = nodes.associateBy { it.person.id }
-        val result = mutableListOf<TreeSegment>()
-
-        val groups = nodes
-            .mapNotNull { child ->
-                val parentIds = child.person.parentIds.filter { nodesById.containsKey(it) }
-                if (parentIds.isEmpty()) null else parentIds.sorted().joinToString("|") to child
-            }
-            .groupBy({ it.first }, { it.second })
-
-        groups.forEach { (key, children) ->
-            val parents = key.split("|").mapNotNull { nodesById[it] }
-            if (parents.isEmpty()) return@forEach
-
-            val parentCenterY = parents.map { (it.top + CardH / 2).value }.average().toFloat()
-            val parentBottomY = parents.maxOf { (it.top + CardH).value }
-            val childTopY = children.minOf { it.top.value }
-            val busY = parentBottomY + (childTopY - parentBottomY) / 2f
-
-            val stemX = if (parents.size >= 2) {
-                val sortedParents = parents.sortedBy { it.left.value }
-                val a = sortedParents.first()
-                val b = sortedParents.last()
-                val aX = (a.left + CardW / 2).value
-                val bX = (b.left + CardW / 2).value
-                // Waagrechte Paar-Verbindung auf Höhe der Kartenmitte.
-                result += TreeSegment(Offset(aX, parentCenterY), Offset(bX, parentCenterY))
-                (aX + bX) / 2f
-            } else {
-                (parents.first().left + CardW / 2).value
-            }
-
-            // Stamm von der Paar-Mitte (bzw. dem einzelnen Elternteil) nach
-            // unten zur Sammel-Linie.
-            val stemStartY = if (parents.size >= 2) parentCenterY else parentBottomY
-            result += TreeSegment(Offset(stemX, stemStartY), Offset(stemX, busY))
-
-            // Sammel-Linie IMMER zeichnen (auch bei nur einem Kind) und dabei
-            // den Stamm mit einbeziehen - sonst hängt die Verbindung "in der
-            // Luft", falls das Kind nicht exakt unter dem Elternteil/der
-            // Paar-Mitte platziert ist (der Baum zentriert Kinder aktuell
-            // nicht automatisch unter ihren Eltern).
-            val busXs = children.map { (it.left + CardW / 2).value } + stemX
-            result += TreeSegment(Offset(busXs.min(), busY), Offset(busXs.max(), busY))
-            children.forEach { childNode ->
-                val childX = (childNode.left + CardW / 2).value
-                result += TreeSegment(Offset(childX, busY), Offset(childX, childNode.top.value))
-            }
-        }
-
-        // Fallback für ältere Baum-Einträge ohne gespeicherte parentIds (nur
-        // das generische connections-Feld vorhanden): einfache Verbindung wie
-        // bisher, damit bestehende Bäume nicht plötzlich ohne Linien dastehen.
-        val handledIds = groups.values.flatten().map { it.person.id }.toHashSet()
-        val nodesByName = nodes.associateBy { it.person.name }
-        val seen = HashSet<String>()
-        nodes.forEach { node ->
-            if (node.person.id in handledIds) return@forEach
-            node.person.connections.forEach { connectionName ->
-                val target = nodesByName[connectionName] ?: return@forEach
-                val pairKey = listOf(node.person.id, target.person.id).sorted().joinToString("-")
-                if (seen.add(pairKey)) {
-                    val (upper, lower) = if (node.top.value <= target.top.value) node to target else target to node
-                    val upperX = (upper.left + CardW / 2).value
-                    val lowerX = (lower.left + CardW / 2).value
-                    val upperBottomY = (upper.top + CardH).value
-                    val midY = upperBottomY + (lower.top.value - upperBottomY) / 2f
-                    result += TreeSegment(Offset(upperX, upperBottomY), Offset(upperX, midY))
-                    result += TreeSegment(Offset(upperX, midY), Offset(lowerX, midY))
-                    result += TreeSegment(Offset(lowerX, midY), Offset(lowerX, lower.top.value))
-                }
-            }
-        }
-
-        result
-    }
-
-    val canvasWidth = rowWidthDp + 80.dp
-    val canvasHeight = (CardH + GapY) * (byGeneration.keys.maxOrNull() ?: 0) + CardH + 80.dp
-
-    var scale by remember { mutableFloatStateOf(0.85f) }
-    var offsetX by remember { mutableFloatStateOf(24f) }
-    var offsetY by remember { mutableFloatStateOf(24f) }
-    var hasCenteredOnFocus by remember(focusPersonId) { mutableStateOf(false) }
+    // Merkt sich, auf wen zuletzt scharfgestellt wurde. Verhindert, dass der
+    // Baum bei jedem Rücksprung aus der Detailansicht erneut wegspringt.
+    var centeredFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var hasSettled by rememberSaveable { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.padding(22.dp, 22.dp, 22.dp, 10.dp)) {
                 Text("Stammbaum", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "${placed.size} Personen · ${byGeneration.size} Generationen",
+                    "${layout.nodes.size} Personen · ${layout.generationCount} Generationen",
                     style = MaterialTheme.typography.bodySmall,
                     color = FamlyTextSecondary
                 )
@@ -221,101 +115,273 @@ fun TreeScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(TreeCanvasBackground)
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
-                            offsetX += pan.x
-                            offsetY += pan.y
-                        }
-                    }
             ) {
                 val density = LocalDensity.current
-                val viewportWidthPx = with(density) { maxWidth.toPx() }
-                val viewportHeightPx = with(density) { maxHeight.toPx() }
+                val viewportWidth = with(density) { maxWidth.toPx() }
+                val viewportHeight = with(density) { maxHeight.toPx() }
+                val contentWidth = with(density) { layout.width.dp.toPx() }
+                val contentHeight = with(density) { layout.height.dp.toPx() }
 
-                LaunchedEffect(focusPersonId, nodes) {
-                    if (hasCenteredOnFocus) return@LaunchedEffect
-                    val target = nodes.find { it.person.id == focusPersonId } ?: return@LaunchedEffect
-                    val centerXPx = with(density) { (target.left + CardW / 2).toPx() }
-                    val centerYPx = with(density) { (target.top + CardH / 2).toPx() }
-                    offsetX = viewportWidthPx / 2f - centerXPx * scale
-                    offsetY = viewportHeightPx / 2f - centerYPx * scale
-                    hasCenteredOnFocus = true
+                fun clampX(value: Float, currentScale: Float) =
+                    clampOffset(value, contentWidth * currentScale, viewportWidth)
+
+                fun clampY(value: Float, currentScale: Float) =
+                    clampOffset(value, contentHeight * currentScale, viewportHeight)
+
+                /** Offset, bei dem [node] mittig im Viewport liegt. */
+                fun offsetCenteredOn(node: TreeNode, targetScale: Float): Offset {
+                    val centerX = with(density) { (node.x + CARD_W / 2f).dp.toPx() }
+                    val centerY = with(density) { (node.y + CARD_H / 2f).dp.toPx() }
+                    return Offset(
+                        clampX(viewportWidth / 2f - centerX * targetScale, targetScale),
+                        clampY(viewportHeight / 2f - centerY * targetScale, targetScale)
+                    )
+                }
+
+                fun applyZoom(newScale: Float, focalX: Float, focalY: Float, animate: Boolean) {
+                    val current = scale.value
+                    val target = newScale.coerceIn(MIN_SCALE, MAX_SCALE)
+                    if (target == current) return
+                    val factor = target / current
+                    val targetX = clampX(focalX - (focalX - offsetX.value) * factor, target)
+                    val targetY = clampY(focalY - (focalY - offsetY.value) * factor, target)
+                    scope.launch {
+                        if (animate) {
+                            launch { scale.animateTo(target, tween(180)) }
+                            launch { offsetX.animateTo(targetX, tween(180)) }
+                            launch { offsetY.animateTo(targetY, tween(180)) }
+                        } else {
+                            scale.snapTo(target)
+                            offsetX.snapTo(targetX)
+                            offsetY.snapTo(targetY)
+                        }
+                    }
+                }
+
+                LaunchedEffect(focusPersonId, layout, viewportWidth, viewportHeight) {
+                    if (layout.nodes.isEmpty() || viewportWidth <= 0f || viewportHeight <= 0f) {
+                        return@LaunchedEffect
+                    }
+
+                    val target = focusPersonId?.let { id -> layout.nodes.find { it.person.id == id } }
+                    if (target != null) {
+                        // Schon dort? Dann nicht erneut wegspringen.
+                        if (centeredFor == focusPersonId) return@LaunchedEffect
+                        val destination = offsetCenteredOn(target, FOCUS_SCALE)
+                        if (hasSettled) {
+                            // Sichtbar hinfahren, damit klar wird, wo die Person
+                            // im Baum gelandet ist.
+                            val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
+                            launch { scale.animateTo(FOCUS_SCALE, spec) }
+                            launch { offsetX.animateTo(destination.x, spec) }
+                            launch { offsetY.animateTo(destination.y, spec) }
+                        } else {
+                            scale.snapTo(FOCUS_SCALE)
+                            offsetX.snapTo(destination.x)
+                            offsetY.snapTo(destination.y)
+                        }
+                        centeredFor = focusPersonId
+                        hasSettled = true
+                        return@LaunchedEffect
+                    }
+
+                    // Fokus-Person (noch) nicht da: erst einmal eine sinnvolle
+                    // Startansicht zeigen. Sobald der Snapshot die Person
+                    // nachliefert, läuft dieser Effekt erneut und fährt hin.
+                    if (hasSettled) return@LaunchedEffect
+                    val self = layout.nodes.find { it.person.id == selfPersonId }
+                    if (self != null) {
+                        val destination = offsetCenteredOn(self, FOCUS_SCALE)
+                        scale.snapTo(FOCUS_SCALE)
+                        offsetX.snapTo(destination.x)
+                        offsetY.snapTo(destination.y)
+                    } else {
+                        val fitted = min(
+                            viewportWidth / contentWidth,
+                            viewportHeight / contentHeight
+                        ).coerceIn(MIN_SCALE, 1f)
+                        scale.snapTo(fitted)
+                        offsetX.snapTo((viewportWidth - contentWidth * fitted) / 2f)
+                        offsetY.snapTo((viewportHeight - contentHeight * fitted) / 2f)
+                    }
+                    hasSettled = true
                 }
 
                 Box(
                     modifier = Modifier
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offsetX,
-                            translationY = offsetY,
-                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                        )
-                        .size(canvasWidth, canvasHeight)
+                        .fillMaxSize()
+                        .pointerInput(layout, viewportWidth, viewportHeight) {
+                            detectTransformGestures { centroid, pan, zoom, _ ->
+                                val current = scale.value
+                                val target = (current * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
+                                val factor = target / current
+                                // Punkt unter dem Finger bleibt stehen - vorher
+                                // zoomte der Baum immer zur linken oberen Ecke.
+                                val nextX = centroid.x - (centroid.x - offsetX.value) * factor + pan.x
+                                val nextY = centroid.y - (centroid.y - offsetY.value) * factor + pan.y
+                                scope.launch {
+                                    scale.snapTo(target)
+                                    offsetX.snapTo(clampX(nextX, target))
+                                    offsetY.snapTo(clampY(nextY, target))
+                                }
+                                // Manuelles Verschieben hebt den Auto-Fokus auf.
+                                if (centeredFor != null) centeredFor = null
+                            }
+                        }
                 ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        segments.forEach { segment ->
-                            val fromPx = Offset(segment.from.x.dp.toPx(), segment.from.y.dp.toPx())
-                            val toPx = Offset(segment.to.x.dp.toPx(), segment.to.y.dp.toPx())
-                            drawLine(
-                                color = FamlyTreeLine,
-                                start = fromPx,
-                                end = toPx,
-                                strokeWidth = 3f,
-                                cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    Box(
+                        modifier = Modifier
+                            // Block-Form: die Animatable-Werte werden erst in der
+                            // Draw-Phase gelesen, das erspart eine Recomposition
+                            // pro Frame beim Pannen/Zoomen.
+                            .graphicsLayer {
+                                scaleX = scale.value
+                                scaleY = scale.value
+                                translationX = offsetX.value
+                                translationY = offsetY.value
+                                transformOrigin = TransformOrigin(0f, 0f)
+                            }
+                            .size(layout.width.dp, layout.height.dp)
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val radius = LineCornerRadius.toPx()
+                            layout.links.forEach { link ->
+                                drawTreeLink(
+                                    points = link.points.map {
+                                        Offset(it.x.dp.toPx(), it.y.dp.toPx())
+                                    },
+                                    color = FamlyTreeLine,
+                                    strokeWidth = if (link.isPartner) {
+                                        PartnerLineWidth.toPx()
+                                    } else {
+                                        LineWidth.toPx()
+                                    },
+                                    cornerRadius = radius
+                                )
+                            }
+                        }
+
+                        layout.nodes.forEach { node ->
+                            TreeCard(
+                                person = node.person,
+                                accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
+                                onClick = { onPersonClick(node.person) },
+                                highlighted = node.person.id == focusPersonId,
+                                isSelf = node.person.id == selfPersonId,
+                                modifier = Modifier.offset(x = node.x.dp, y = node.y.dp)
                             )
                         }
                     }
+                }
 
-                    nodes.forEach { node ->
-                        TreeCard(
-                            node = node,
-                            onClick = { onPersonClick(node.person) },
-                            highlighted = node.person.id == focusPersonId,
-                            isSelf = node.person.id == selfPersonId,
-                            modifier = Modifier.offset(x = node.left, y = node.top)
-                        )
-                    }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 14.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ZoomButton(
+                        icon = Icons.Filled.Add,
+                        onClick = {
+                            applyZoom(
+                                scale.value + 0.2f,
+                                viewportWidth / 2f,
+                                viewportHeight / 2f,
+                                animate = true
+                            )
+                        }
+                    )
+                    ZoomButton(
+                        icon = Icons.Filled.Remove,
+                        onClick = {
+                            applyZoom(
+                                scale.value - 0.2f,
+                                viewportWidth / 2f,
+                                viewportHeight / 2f,
+                                animate = true
+                            )
+                        }
+                    )
+                }
+
+                // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon,
+                // wohin man im Baum gepannt/gezoomt hat.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 14.dp, bottom = 14.dp)
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(26.dp))
+                        .background(FamlyPetrolPrimary)
+                        .clickable(onClick = onOpenSelf),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = "Zu mir",
+                        tint = FamlyWhite
+                    )
                 }
             }
-        }
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 14.dp, bottom = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ZoomButton(icon = Icons.Filled.Add, onClick = { scale = min(MAX_SCALE, scale + 0.15f) })
-            ZoomButton(icon = Icons.Filled.Remove, onClick = { scale = max(MIN_SCALE, scale - 0.15f) })
-        }
-
-        // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon, wohin man
-        // im Baum gepannt/gezoomt hat.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 14.dp, bottom = 14.dp)
-                .size(52.dp)
-                .clip(RoundedCornerShape(26.dp))
-                .background(FamlyPetrolPrimary)
-                .clickable(onClick = onOpenSelf),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(imageVector = Icons.Filled.Person, contentDescription = "Zu mir", tint = FamlyWhite)
         }
     }
 }
 
+/**
+ * Begrenzt das Verschieben so, dass der Baum nicht komplett aus dem Bild
+ * gezogen werden kann. Passt der Inhalt komplett in den Viewport, wird er
+ * zentriert.
+ */
+private fun clampOffset(value: Float, scaledContent: Float, viewport: Float): Float =
+    if (scaledContent <= viewport) {
+        (viewport - scaledContent) / 2f
+    } else {
+        value.coerceIn(viewport - scaledContent, 0f)
+    }
+
+/** Zeichnet eine rechtwinklige Polyline mit abgerundeten Ecken. */
+private fun DrawScope.drawTreeLink(
+    points: List<Offset>,
+    color: Color,
+    strokeWidth: Float,
+    cornerRadius: Float
+) {
+    if (points.size < 2) return
+    val path = Path()
+    path.moveTo(points.first().x, points.first().y)
+    for (i in 1 until points.size - 1) {
+        val previous = points[i - 1]
+        val current = points[i]
+        val next = points[i + 1]
+        val inLength = (current - previous).getDistance()
+        val outLength = (next - current).getDistance()
+        if (inLength < 0.01f || outLength < 0.01f) continue
+        val radius = min(cornerRadius, min(inLength, outLength) / 2f)
+        val start = current + (previous - current) * (radius / inLength)
+        val end = current + (next - current) * (radius / outLength)
+        path.lineTo(start.x, start.y)
+        path.quadraticBezierTo(current.x, current.y, end.x, end.y)
+    }
+    path.lineTo(points.last().x, points.last().y)
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+}
+
 @Composable
-private fun TreeCard(node: TreeNodeLayout, onClick: () -> Unit, highlighted: Boolean = false, isSelf: Boolean = false, modifier: Modifier = Modifier) {
-    val person = node.person
+private fun TreeCard(
+    person: Person,
+    accent: Color,
+    onClick: () -> Unit,
+    highlighted: Boolean = false,
+    isSelf: Boolean = false,
+    modifier: Modifier = Modifier
+) {
     val sub = if (person.isDeceased) person.birthDate.ifBlank { "verstorben" } else person.birthDate
     // "Ich" bekommt eine dauerhafte Umrandung, damit man sich im Baum immer
-    // sofort wiederfindet - unabhängig vom temporären Fokus-Highlight (z. B.
-    // nach dem Anlegen einer neuen Person), das weiterhin Vorrang/eigene
-    // Farbe hat, falls beides gleichzeitig zutrifft.
+    // sofort wiederfindet - unabhängig vom temporären Fokus-Highlight.
     val borderColor = when {
         highlighted -> FamlyAccentOrange
         isSelf -> FamlyPetrolPrimary
@@ -323,7 +389,7 @@ private fun TreeCard(node: TreeNodeLayout, onClick: () -> Unit, highlighted: Boo
     }
     Column(
         modifier = modifier
-            .width(CardW)
+            .width(CARD_W.dp)
             .clip(RoundedCornerShape(18.dp))
             .then(
                 if (borderColor != null) {
@@ -338,7 +404,7 @@ private fun TreeCard(node: TreeNodeLayout, onClick: () -> Unit, highlighted: Boo
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        FamlyAvatar(initial = person.initial, accent = node.color, size = 48, cornerRadius = 24)
+        FamlyAvatar(initial = person.initial, accent = accent, size = 48, cornerRadius = 24)
         Text(
             person.name,
             style = MaterialTheme.typography.bodyMedium,

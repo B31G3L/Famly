@@ -5,7 +5,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -87,12 +91,24 @@ fun FamlyNavHost(
 
     // Nach dem Anlegen/Bearbeiten einer Person direkt zum Baum, mit dieser
     // Person mittig fokussiert, statt einfach nur zurückzunavigieren.
+    //
+    // Der Fokus wird bewusst NICHT über das Navigations-Argument transportiert:
+    // die Bottom-Bar navigiert mit restoreState = true, und ein restaurierter
+    // Back-Stack-Eintrag bringt seine ALTEN Argumente mit - die frisch
+    // übergebene focusPersonId wurde dadurch stillschweigend verworfen. Ein
+    // eigener State ist hier robuster und übersteht auch den Prozess-Tod.
+    var pendingFocusPersonId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Verhindert doppeltes Speichern bei schnellem Doppel-Tap auf "Speichern".
+    var isSaving by remember { mutableStateOf(false) }
+
     // WICHTIG: dasselbe saveState/restoreState-Muster wie die Bottom-Bar
     // weiter unten verwenden - sonst gerät der interne Back-Stack der
     // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
     // danach nicht mehr zuverlässig.
     fun goToTreeFocusedOn(personId: String) {
-        navController.navigate(FamlyRoutes.tree(focusPersonId = personId)) {
+        pendingFocusPersonId = personId
+        navController.navigate(FamlyRoutes.tree()) {
             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
             launchSingleTop = true
             restoreState = true
@@ -107,6 +123,9 @@ fun FamlyNavHost(
                 FamlyBottomBar(
                     currentRoute = currentRoute,
                     onNavigate = { route ->
+                        // Bewusster Tab-Wechsel: kein Auto-Fokus mehr, der Baum
+                        // soll da stehen bleiben, wo der Nutzer ihn verlassen hat.
+                        pendingFocusPersonId = null
                         val resolvedRoute = if (route == FamlyBottomDestination.TREE.route) {
                             FamlyRoutes.tree()
                         } else {
@@ -158,12 +177,12 @@ fun FamlyNavHost(
                     }
                 )
             ) { entry ->
-                val focusPersonId = entry.arguments?.getString("focusPersonId")?.takeIf { it.isNotBlank() }
+                val routeFocusPersonId = entry.arguments?.getString("focusPersonId")?.takeIf { it.isNotBlank() }
                 TreeScreen(
                     members = members,
                     onPersonClick = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
                     onOpenSelf = { navController.navigate(FamlyRoutes.personDetail(SELF_PERSON_ID)) },
-                    focusPersonId = focusPersonId,
+                    focusPersonId = pendingFocusPersonId ?: routeFocusPersonId,
                     selfPersonId = SELF_PERSON_ID
                 )
             }
@@ -210,44 +229,50 @@ fun FamlyNavHost(
                     relativeOf = relativeOfPerson,
                     onClose = { navController.popBackStack() },
                     onSave = { result ->
-                        coroutineScope.launch {
-                            if (existingPerson != null) {
-                                familyRepository.updatePerson(
-                                    id = existingPerson.id,
-                                    name = result.name,
-                                    birthDate = result.birthDate,
-                                    birthPlace = result.birthPlace,
-                                    isDeceased = result.isDeceased,
-                                    deathDate = result.deathDate,
-                                    bio = result.bio
-                                ).onSuccess {
-                                    goToTreeFocusedOn(existingPerson.id)
-                                }.onFailure { error ->
-                                    Toast.makeText(
-                                        context,
-                                        "Speichern fehlgeschlagen: ${error.message}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                        // Doppel-Tap auf "Speichern" wuerde sonst zwei Personen
+                        // anlegen - der Firestore-Aufruf ist asynchron.
+                        if (!isSaving) {
+                            isSaving = true
+                            coroutineScope.launch {
+                                if (existingPerson != null) {
+                                    familyRepository.updatePerson(
+                                        id = existingPerson.id,
+                                        name = result.name,
+                                        birthDate = result.birthDate,
+                                        birthPlace = result.birthPlace,
+                                        isDeceased = result.isDeceased,
+                                        deathDate = result.deathDate,
+                                        bio = result.bio
+                                    ).onSuccess {
+                                        goToTreeFocusedOn(existingPerson.id)
+                                    }.onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            "Speichern fehlgeschlagen: ${error.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                } else if (relativeOfPerson != null && result.relationType != null) {
+                                    familyRepository.addPerson(
+                                        name = result.name,
+                                        birthDate = result.birthDate,
+                                        birthPlace = result.birthPlace,
+                                        isDeceased = result.isDeceased,
+                                        deathDate = result.deathDate,
+                                        bio = result.bio,
+                                        relativeOfId = relativeOfPerson.id,
+                                        relationType = result.relationType
+                                    ).onSuccess { newPerson ->
+                                        goToTreeFocusedOn(newPerson.id)
+                                    }.onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            "Speichern fehlgeschlagen: ${error.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                                 }
-                            } else if (relativeOfPerson != null && result.relationType != null) {
-                                familyRepository.addPerson(
-                                    name = result.name,
-                                    birthDate = result.birthDate,
-                                    birthPlace = result.birthPlace,
-                                    isDeceased = result.isDeceased,
-                                    deathDate = result.deathDate,
-                                    bio = result.bio,
-                                    relativeOfId = relativeOfPerson.id,
-                                    relationType = result.relationType
-                                ).onSuccess { newPerson ->
-                                    goToTreeFocusedOn(newPerson.id)
-                                }.onFailure { error ->
-                                    Toast.makeText(
-                                        context,
-                                        "Speichern fehlgeschlagen: ${error.message}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
+                                isSaving = false
                             }
                         }
                     },
