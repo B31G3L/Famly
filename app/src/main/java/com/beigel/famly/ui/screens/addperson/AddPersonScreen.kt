@@ -1,5 +1,6 @@
 package com.beigel.famly.ui.screens.addperson
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.beigel.famly.data.model.Person
@@ -75,6 +77,7 @@ fun AddPersonScreen(
     onSave: (PersonFormResult) -> Unit,
     onDelete: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     var name by remember { mutableStateOf(existingPerson?.name.orEmpty()) }
     var birthDateText by remember { mutableStateOf(existingPerson?.birthDate.orEmpty()) }
     var birthPlace by remember { mutableStateOf(existingPerson?.birthPlace.orEmpty()) }
@@ -117,18 +120,32 @@ fun AddPersonScreen(
                 "Speichern",
                 color = if (canSave) FamlyPetrolPrimary else FamlyTextSecondary,
                 style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.clickable(enabled = canSave) {
-                    onSave(
-                        PersonFormResult(
-                            name = name.trim(),
-                            birthDate = birthDateText,
-                            birthPlace = birthPlace.trim(),
-                            isDeceased = isDeceased,
-                            deathDate = if (isDeceased) deathDateText else "",
-                            bio = bio.trim(),
-                            relationType = relationType
-                        )
-                    )
+                modifier = Modifier.clickable {
+                    // WICHTIG: bewusst immer klickbar (nicht enabled = canSave),
+                    // damit ein Tap bei fehlenden Pflichtfeldern nicht einfach
+                    // wirkungslos verpufft - der Nutzer bekommt sonst gar keine
+                    // Rückmeldung, warum "Speichern" nichts tut.
+                    when {
+                        name.isBlank() -> {
+                            Toast.makeText(context, "Bitte einen Namen eingeben", Toast.LENGTH_SHORT).show()
+                        }
+                        isRelativeFlow && relationType == null -> {
+                            Toast.makeText(context, "Bitte eine Beziehung auswählen", Toast.LENGTH_SHORT).show()
+                        }
+                        else -> {
+                            onSave(
+                                PersonFormResult(
+                                    name = name.trim(),
+                                    birthDate = birthDateText,
+                                    birthPlace = birthPlace.trim(),
+                                    isDeceased = isDeceased,
+                                    deathDate = if (isDeceased) deathDateText else "",
+                                    bio = bio.trim(),
+                                    relationType = relationType
+                                )
+                            )
+                        }
+                    }
                 }
             )
         }

@@ -73,7 +73,11 @@ fun FamlyNavHost(
 
     val members = familyTree.members
     val recentlyAdded = members.filter { it.id != SELF_PERSON_ID }.takeLast(2).reversed()
-    val familyMembers = members.map { person ->
+    // Für "Liste teilen" zählen nur Personen, die tatsächlich über den
+    // Einladungscode beigetreten sind (echter Account, erkennbar an uid).
+    // Rein manuell angelegte Baum-Einträge (z. B. verstorbene Verwandte ohne
+    // eigenen Account) sollen hier NICHT als Mitglieder auftauchen.
+    val familyMembers = members.filter { it.uid != null }.map { person ->
         FamilyMember(
             person = person,
             role = if (person.id == SELF_PERSON_ID) "Besitzer" else "Mitglied",
@@ -159,7 +163,8 @@ fun FamlyNavHost(
                     members = members,
                     onPersonClick = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
                     onOpenSelf = { navController.navigate(FamlyRoutes.personDetail(SELF_PERSON_ID)) },
-                    focusPersonId = focusPersonId
+                    focusPersonId = focusPersonId,
+                    selfPersonId = SELF_PERSON_ID
                 )
             }
 

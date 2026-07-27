@@ -69,7 +69,7 @@ private data class TreeNodeLayout(
     val color: Color
 )
 
-private data class TreeConnector(
+private data class TreeSegment(
     val from: Offset,
     val to: Offset
 )
@@ -77,16 +77,19 @@ private data class TreeConnector(
 /**
  * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch),
  * analog zum "Famly_dc"-Handoff. Personen werden anhand von generation/slot
- * aus [Person.treePosition] platziert; Verbindungslinien werden aus dem
- * generischen [Person.connections]-Feld abgeleitet (Name-Matching), da das
- * Datenmodell aktuell keine typisierten Eltern-/Partner-Referenzen kennt.
+ * aus [Person.treePosition] platziert. Verbindungslinien folgen klassischer
+ * Stammbaum-Optik: Elternpaare werden waagrecht verbunden, darunter hängen
+ * die Kinder mittig an einer gemeinsamen Sammel-Linie (abgeleitet aus
+ * [Person.parentIds]). Für ältere Einträge ohne parentIds greift ein
+ * Fallback über das generische [Person.connections]-Feld.
  */
 @Composable
 fun TreeScreen(
     members: List<Person>,
     onPersonClick: (Person) -> Unit,
     onOpenSelf: () -> Unit,
-    focusPersonId: String? = null
+    focusPersonId: String? = null,
+    selfPersonId: String = "ich"
 ) {
     val placed = members.filter { it.treePosition != null }
     val byGeneration = placed.groupBy { it.treePosition!!.generation }.toSortedMap()
@@ -109,26 +112,89 @@ fun TreeScreen(
         }
     }
 
-    val nodesByName = remember(nodes) { nodes.associateBy { it.person.name } }
+    // Klassische Stammbaum-Optik:
+    // - Eltern(paare) werden auf Höhe der Kartenmitte waagrecht verbunden.
+    // - Von der Mitte dieser Paar-Linie (bzw. direkt vom einzelnen Elternteil,
+    //   falls nur einer bekannt ist) geht ein Stamm nach unten zu einer
+    //   Sammel-Linie auf halber Höhe zwischen Eltern- und Kinder-Reihe.
+    // - Von der Sammel-Linie zweigen senkrechte Linien zu jedem Kind ab.
+    // Gruppiert wird über [Person.parentIds] (Geschwister mit demselben
+    // Eltern-Set landen automatisch am selben Stamm).
+    val segments = remember(nodes) {
+        val nodesById = nodes.associateBy { it.person.id }
+        val result = mutableListOf<TreeSegment>()
 
-    val connectors = remember(nodes) {
+        val groups = nodes
+            .mapNotNull { child ->
+                val parentIds = child.person.parentIds.filter { nodesById.containsKey(it) }
+                if (parentIds.isEmpty()) null else parentIds.sorted().joinToString("|") to child
+            }
+            .groupBy({ it.first }, { it.second })
+
+        groups.forEach { (key, children) ->
+            val parents = key.split("|").mapNotNull { nodesById[it] }
+            if (parents.isEmpty()) return@forEach
+
+            val parentCenterY = parents.map { (it.top + CardH / 2).value }.average().toFloat()
+            val parentBottomY = parents.maxOf { (it.top + CardH).value }
+            val childTopY = children.minOf { it.top.value }
+            val busY = parentBottomY + (childTopY - parentBottomY) / 2f
+
+            val stemX = if (parents.size >= 2) {
+                val sortedParents = parents.sortedBy { it.left.value }
+                val a = sortedParents.first()
+                val b = sortedParents.last()
+                val aX = (a.left + CardW / 2).value
+                val bX = (b.left + CardW / 2).value
+                // Waagrechte Paar-Verbindung auf Höhe der Kartenmitte.
+                result += TreeSegment(Offset(aX, parentCenterY), Offset(bX, parentCenterY))
+                (aX + bX) / 2f
+            } else {
+                (parents.first().left + CardW / 2).value
+            }
+
+            // Stamm von der Paar-Mitte (bzw. dem einzelnen Elternteil) nach
+            // unten zur Sammel-Linie.
+            val stemStartY = if (parents.size >= 2) parentCenterY else parentBottomY
+            result += TreeSegment(Offset(stemX, stemStartY), Offset(stemX, busY))
+
+            // Sammel-Linie IMMER zeichnen (auch bei nur einem Kind) und dabei
+            // den Stamm mit einbeziehen - sonst hängt die Verbindung "in der
+            // Luft", falls das Kind nicht exakt unter dem Elternteil/der
+            // Paar-Mitte platziert ist (der Baum zentriert Kinder aktuell
+            // nicht automatisch unter ihren Eltern).
+            val busXs = children.map { (it.left + CardW / 2).value } + stemX
+            result += TreeSegment(Offset(busXs.min(), busY), Offset(busXs.max(), busY))
+            children.forEach { childNode ->
+                val childX = (childNode.left + CardW / 2).value
+                result += TreeSegment(Offset(childX, busY), Offset(childX, childNode.top.value))
+            }
+        }
+
+        // Fallback für ältere Baum-Einträge ohne gespeicherte parentIds (nur
+        // das generische connections-Feld vorhanden): einfache Verbindung wie
+        // bisher, damit bestehende Bäume nicht plötzlich ohne Linien dastehen.
+        val handledIds = groups.values.flatten().map { it.person.id }.toHashSet()
+        val nodesByName = nodes.associateBy { it.person.name }
         val seen = HashSet<String>()
-        val result = mutableListOf<TreeConnector>()
         nodes.forEach { node ->
+            if (node.person.id in handledIds) return@forEach
             node.person.connections.forEach { connectionName ->
                 val target = nodesByName[connectionName] ?: return@forEach
-                val key = listOf(node.person.id, target.person.id).sorted().joinToString("-")
-                if (seen.add(key)) {
-                    val a = node
-                    val b = target
-                    val (upper, lower) = if (a.top.value <= b.top.value) a to b else b to a
-                    result += TreeConnector(
-                        from = Offset((upper.left + CardW / 2).value, (upper.top + CardH).value),
-                        to = Offset((lower.left + CardW / 2).value, lower.top.value)
-                    )
+                val pairKey = listOf(node.person.id, target.person.id).sorted().joinToString("-")
+                if (seen.add(pairKey)) {
+                    val (upper, lower) = if (node.top.value <= target.top.value) node to target else target to node
+                    val upperX = (upper.left + CardW / 2).value
+                    val lowerX = (lower.left + CardW / 2).value
+                    val upperBottomY = (upper.top + CardH).value
+                    val midY = upperBottomY + (lower.top.value - upperBottomY) / 2f
+                    result += TreeSegment(Offset(upperX, upperBottomY), Offset(upperX, midY))
+                    result += TreeSegment(Offset(upperX, midY), Offset(lowerX, midY))
+                    result += TreeSegment(Offset(lowerX, midY), Offset(lowerX, lower.top.value))
                 }
             }
         }
+
         result
     }
 
@@ -189,20 +255,15 @@ fun TreeScreen(
                         .size(canvasWidth, canvasHeight)
                 ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        connectors.forEach { connector ->
-                            val fromPx = Offset(connector.from.x.dp.toPx(), connector.from.y.dp.toPx())
-                            val toPx = Offset(connector.to.x.dp.toPx(), connector.to.y.dp.toPx())
-                            val midY = fromPx.y + (toPx.y - fromPx.y) / 2f
-                            val path = androidx.compose.ui.graphics.Path().apply {
-                                moveTo(fromPx.x, fromPx.y)
-                                lineTo(fromPx.x, midY)
-                                lineTo(toPx.x, midY)
-                                lineTo(toPx.x, toPx.y)
-                            }
-                            drawPath(
-                                path = path,
+                        segments.forEach { segment ->
+                            val fromPx = Offset(segment.from.x.dp.toPx(), segment.from.y.dp.toPx())
+                            val toPx = Offset(segment.to.x.dp.toPx(), segment.to.y.dp.toPx())
+                            drawLine(
                                 color = FamlyTreeLine,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                                start = fromPx,
+                                end = toPx,
+                                strokeWidth = 3f,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round
                             )
                         }
                     }
@@ -212,6 +273,7 @@ fun TreeScreen(
                             node = node,
                             onClick = { onPersonClick(node.person) },
                             highlighted = node.person.id == focusPersonId,
+                            isSelf = node.person.id == selfPersonId,
                             modifier = Modifier.offset(x = node.left, y = node.top)
                         )
                     }
@@ -247,16 +309,25 @@ fun TreeScreen(
 }
 
 @Composable
-private fun TreeCard(node: TreeNodeLayout, onClick: () -> Unit, highlighted: Boolean = false, modifier: Modifier = Modifier) {
+private fun TreeCard(node: TreeNodeLayout, onClick: () -> Unit, highlighted: Boolean = false, isSelf: Boolean = false, modifier: Modifier = Modifier) {
     val person = node.person
     val sub = if (person.isDeceased) person.birthDate.ifBlank { "verstorben" } else person.birthDate
+    // "Ich" bekommt eine dauerhafte Umrandung, damit man sich im Baum immer
+    // sofort wiederfindet - unabhängig vom temporären Fokus-Highlight (z. B.
+    // nach dem Anlegen einer neuen Person), das weiterhin Vorrang/eigene
+    // Farbe hat, falls beides gleichzeitig zutrifft.
+    val borderColor = when {
+        highlighted -> FamlyAccentOrange
+        isSelf -> FamlyPetrolPrimary
+        else -> null
+    }
     Column(
         modifier = modifier
             .width(CardW)
             .clip(RoundedCornerShape(18.dp))
             .then(
-                if (highlighted) {
-                    Modifier.border(2.5.dp, FamlyAccentOrange, RoundedCornerShape(18.dp))
+                if (borderColor != null) {
+                    Modifier.border(2.5.dp, borderColor, RoundedCornerShape(18.dp))
                 } else {
                     Modifier
                 }

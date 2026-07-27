@@ -23,8 +23,10 @@ internal fun Person.toFirestoreMap(): Map<String, Any?> = mapOf(
     "deathDate" to deathDate,
     "bio" to bio,
     "connections" to connections,
+    "parentIds" to parentIds,
     "treeGeneration" to treePosition?.generation,
-    "treeSlot" to treePosition?.slot
+    "treeSlot" to treePosition?.slot,
+    "uid" to uid
 )
 
 internal fun DocumentSnapshot.toPerson(): Person? {
@@ -46,6 +48,8 @@ internal fun DocumentSnapshot.toPerson(): Person? {
         deathDate = getString("deathDate").orEmpty(),
         bio = getString("bio").orEmpty(),
         connections = (get("connections") as? List<*>)?.filterIsInstance<String>().orEmpty(),
-        treePosition = if (generation != null && slot != null) TreePosition(generation, slot) else null
+        parentIds = (get("parentIds") as? List<*>)?.filterIsInstance<String>().orEmpty(),
+        treePosition = if (generation != null && slot != null) TreePosition(generation, slot) else null,
+        uid = getString("uid")
     )
 }

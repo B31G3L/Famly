@@ -39,7 +39,7 @@ class FakeFamilyRepository : FamilyRepository {
     )
     private val ich = Person(
         id = "ich", name = "Ich", initial = "I", relation = "Ich",
-        accent = AvatarAccent.PETROL, treePosition = TreePosition(2, 1)
+        accent = AvatarAccent.PETROL, treePosition = TreePosition(2, 1), uid = "ich"
     )
 
     private val _familyTree = MutableStateFlow(

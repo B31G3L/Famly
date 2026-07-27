@@ -126,6 +126,15 @@ class FirestoreFamilyRepository(
                 if (snapshot != null && members.none { it.id == SELF_PERSON_ID }) {
                     recreateSelfPersonIfMissing(familyId)
                 }
+                // Selbstheilung: ältere Personen-Einträge (vor Einführung des
+                // parentIds-Felds) kennen nur das richtungslose connections-
+                // Feld. Hier wird daraus einmalig die echte Eltern-Kind-
+                // Beziehung abgeleitet (per Generationsvergleich: die niedrigere
+                // Generation ist der Elternteil) und nachgetragen, damit die
+                // klassische Stammbaum-Darstellung greift.
+                if (snapshot != null) {
+                    backfillParentIdsFromConnections(familyId, members)
+                }
             }
     }
 
@@ -149,7 +158,8 @@ class FirestoreFamilyRepository(
                 initial = displayName.trim().firstOrNull()?.uppercase() ?: "?",
                 relation = "Ich",
                 accent = AvatarAccent.PETROL,
-                treePosition = TreePosition(generation = 2, slot = 0)
+                treePosition = TreePosition(generation = 2, slot = 0),
+                uid = user.uid
             )
             runCatching {
                 personsRef.document(SELF_PERSON_ID).set(selfPerson.toFirestoreMap()).await()
@@ -208,7 +218,8 @@ class FirestoreFamilyRepository(
             initial = displayName.trim().firstOrNull()?.uppercase() ?: "?",
             relation = "Ich",
             accent = AvatarAccent.PETROL,
-            treePosition = TreePosition(generation = 2, slot = 1)
+            treePosition = TreePosition(generation = 2, slot = 1),
+            uid = user.uid
         )
         familyRef.collection(COLLECTION_PERSONS).document(SELF_PERSON_ID)
             .set(selfPerson.toFirestoreMap())
@@ -235,6 +246,31 @@ class FirestoreFamilyRepository(
         firestore.collection(COLLECTION_USERS).document(user.uid)
             .set(mapOf(FIELD_FAMILY_ID to familyDoc.id), SetOptions.merge())
             .await()
+
+        // Schritt 3: eigenen Personen-Eintrag im Baum der Familie anlegen,
+        // damit der Beitritt auch als "echtes" Mitglied (mit uid) sichtbar
+        // wird - u. a. in der Mitglieder-Liste von "Liste teilen". Nur
+        // schreiben, falls noch keine Person mit dieser uid existiert (z. B.
+        // erneutes Beitreten nach Reinstall auf demselben Account).
+        val personsRef = firestore.collection(COLLECTION_FAMILIES).document(familyDoc.id)
+            .collection(COLLECTION_PERSONS)
+        val existingPersons = personsRef.get().await()
+        val alreadyLinked = existingPersons.documents.any { it.getString("uid") == user.uid }
+        if (!alreadyLinked) {
+            val displayName = user.displayName?.takeIf { it.isNotBlank() } ?: "Neues Mitglied"
+            val members = existingPersons.documents.mapNotNull { it.toPerson() }
+            val id = UUID.randomUUID().toString()
+            val newMember = Person(
+                id = id,
+                name = displayName,
+                initial = displayName.trim().firstOrNull()?.uppercase() ?: "?",
+                relation = "Mitglied",
+                accent = nextAccent(members),
+                treePosition = nextJoinerPosition(members),
+                uid = user.uid
+            )
+            personsRef.document(id).set(newMember.toFirestoreMap()).await()
+        }
     }
 
     override suspend fun addPerson(
@@ -332,9 +368,70 @@ class FirestoreFamilyRepository(
             .await()
     }
 
+    /**
+     * Leitet für Personen ohne gespeicherte [Person.parentIds] aus dem alten,
+     * richtungslosen [Person.connections]-Feld die echte Eltern-Kind-Beziehung
+     * ab: von zwei verbundenen Personen gilt die mit der niedrigeren
+     * [TreePosition.generation] als Elternteil. Gleiche Generation (z. B.
+     * Partner-artige Verbindungen) wird ignoriert, da hier keine Kind-Richtung
+     * bestimmbar ist. Schreibt nur Personen, für die sich tatsächlich neue
+     * parentIds ergeben (No-Op, falls schon alles migriert ist).
+     */
+    private fun backfillParentIdsFromConnections(familyId: String, members: List<Person>) {
+        val byName = members.groupBy { it.name }
+        val updates = mutableMapOf<String, List<String>>()
+
+        members.forEach { person ->
+            if (person.parentIds.isNotEmpty() || person.connections.isEmpty()) return@forEach
+            val personGeneration = person.treePosition?.generation ?: return@forEach
+
+            val inferredParentIds = person.connections
+                .flatMap { name -> byName[name].orEmpty() }
+                .filter { it.id != person.id }
+                .filter { candidate ->
+                    val candidateGeneration = candidate.treePosition?.generation
+                    candidateGeneration != null && candidateGeneration < personGeneration
+                }
+                .map { it.id }
+                .distinct()
+
+            if (inferredParentIds.isNotEmpty()) {
+                updates[person.id] = inferredParentIds
+            }
+        }
+
+        if (updates.isEmpty()) return
+
+        externalScope.launch {
+            runCatching {
+                val personsRef = firestore.collection(COLLECTION_FAMILIES).document(familyId)
+                    .collection(COLLECTION_PERSONS)
+                firestore.runBatch { batch ->
+                    updates.forEach { (personId, parentIds) ->
+                        batch.update(personsRef.document(personId), "parentIds", parentIds)
+                    }
+                }.await()
+            }
+        }
+    }
+
     private fun nextAccent(members: List<Person>): AvatarAccent {
         val rotation = AvatarAccent.entries
         return rotation[members.size % rotation.size]
+    }
+
+    /**
+     * Platziert neu beigetretene Mitglieder (ohne konkrete Verwandtschafts-
+     * beziehung, im Gegensatz zu [positionRelativeTo]) generisch in derselben
+     * Generation wie die Person "Ich" der Familie, im nächsten freien Slot.
+     */
+    private fun nextJoinerPosition(members: List<Person>): TreePosition {
+        val selfGeneration = members.find { it.id == SELF_PERSON_ID }?.treePosition?.generation ?: 2
+        val usedSlots = members
+            .filter { it.treePosition?.generation == selfGeneration }
+            .mapNotNull { it.treePosition?.slot }
+        val nextSlot = (usedSlots.maxOrNull() ?: -1) + 1
+        return TreePosition(selfGeneration, nextSlot)
     }
 
     /**

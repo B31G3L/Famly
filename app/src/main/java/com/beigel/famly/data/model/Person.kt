@@ -26,7 +26,15 @@ data class Person(
     val bio: String = "",
     val connections: List<String> = emptyList(),
     val parentIds: List<String> = emptyList(),
-    val treePosition: TreePosition? = null
+    val treePosition: TreePosition? = null,
+    /**
+     * UID des verknüpften Firebase-Accounts, falls diese Person tatsächlich
+     * über den Einladungscode der Familie beigetreten ist (echtes Mitglied).
+     * Bleibt null für Personen, die nur manuell in den Baum eingetragen
+     * wurden (z. B. verstorbene Verwandte ohne eigenen Account) - diese
+     * zählen zwar zum Stammbaum, aber nicht zu den "geteilten" Mitgliedern.
+     */
+    val uid: String? = null
 )
 
 /**
