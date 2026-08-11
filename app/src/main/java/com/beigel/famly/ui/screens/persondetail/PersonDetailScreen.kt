@@ -15,7 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
@@ -30,11 +30,11 @@ import androidx.compose.ui.unit.dp
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.ui.components.FamlyAvatar
 import com.beigel.famly.ui.components.FamlyCard
+import com.beigel.famly.ui.components.FamlyIconTile
 import com.beigel.famly.ui.components.FamlySecondaryButton
 import com.beigel.famly.ui.theme.FamlyBackground
 import com.beigel.famly.ui.theme.FamlyChipBackground
 import com.beigel.famly.ui.theme.FamlyChipText
-import com.beigel.famly.ui.theme.FamlyIconBackground
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyStatusAlive
 import com.beigel.famly.ui.theme.FamlyTextSecondary
@@ -68,9 +68,9 @@ fun PersonDetailScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconTile(icon = Icons.Filled.ArrowBack, contentDescription = "Zurück", onClick = onBack)
+            FamlyIconTile(icon = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Zurück", onClick = onBack)
             Text("Person", style = MaterialTheme.typography.labelLarge)
-            IconTile(icon = Icons.Filled.Edit, contentDescription = "Bearbeiten", onClick = onEdit)
+            FamlyIconTile(icon = Icons.Filled.Edit, contentDescription = "Bearbeiten", onClick = onEdit)
         }
 
         Column(
@@ -246,19 +246,5 @@ private fun InfoRow(label: String, value: String, valueColor: androidx.compose.u
             style = MaterialTheme.typography.bodyMedium,
             color = valueColor ?: MaterialTheme.colorScheme.onSurface
         )
-    }
-}
-
-@Composable
-private fun IconTile(icon: androidx.compose.ui.graphics.vector.ImageVector, contentDescription: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(34.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(FamlyIconBackground)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(imageVector = icon, contentDescription = contentDescription, modifier = Modifier.size(16.dp))
     }
 }

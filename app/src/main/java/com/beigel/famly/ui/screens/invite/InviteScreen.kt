@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Park
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -27,9 +29,9 @@ import androidx.compose.ui.unit.dp
 import com.beigel.famly.data.model.FamilyMember
 import com.beigel.famly.data.model.MemberStatus
 import com.beigel.famly.ui.components.FamlyAvatar
+import com.beigel.famly.ui.components.FamlyIconTile
 import com.beigel.famly.ui.theme.FamlyAvatarOrange
 import com.beigel.famly.ui.theme.FamlyBackground
-import com.beigel.famly.ui.theme.FamlyIconBackground
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyWhite
@@ -53,22 +55,14 @@ fun InviteScreen(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(FamlyIconBackground)
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(imageVector = Icons.Filled.ArrowBack, contentDescription = "Zurück", modifier = Modifier.size(16.dp))
-            }
+            FamlyIconTile(icon = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Zurück", onClick = onBack)
             Text("Liste teilen", style = MaterialTheme.typography.labelLarge)
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(22.dp, 26.dp, 22.dp, 32.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {

@@ -30,6 +30,12 @@ val FamlyLabelMuted = Color(0xFF7A728C)
 val FamlySurfaceLight = Color(0xFFEFE7FB)
 val FamlyWhite = Color(0xFFFFFFFF)
 
+// Hintergründe der Stat-Pills im Dashboard (Generationen/Neu) - vorher an
+// Ort und Stelle hardcodiert, jetzt als benannte Tokens.
+val FamlyPillBlueBackground = Color(0xFFE3F1FB)
+val FamlyPillBlueValue = Color(0xFF4D8CF0)
+val FamlyPillOrangeBackground = Color(0xFFFFF0E2)
+
 // Akzentfarbe für Highlights/FAB/Primärbutton mit Orange-Ton
 val FamlyAccentOrange = Color(0xFFFF8A65)
 val FamlyAccentYellow = Color(0xFFFFCA3A)

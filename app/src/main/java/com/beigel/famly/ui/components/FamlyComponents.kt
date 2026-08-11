@@ -10,18 +10,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beigel.famly.data.model.AvatarAccent
+import com.beigel.famly.ui.theme.FamlyIconBackground
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
+import com.beigel.famly.ui.theme.FamlyTextPrimary
 import com.beigel.famly.ui.theme.FamlyWhite
 
 @Composable
@@ -59,22 +66,65 @@ fun FamlyAvatar(
     FamlyAvatar(initial = initial, accent = accentType.color, size = size, cornerRadius = cornerRadius, modifier = modifier)
 }
 
+/**
+ * Runde/eckige Icon-Kachel für Screen-Header (Zurück, Bearbeiten, ...).
+ * War vorher an mehreren Stellen (PersonDetailScreen, InviteScreen) fast
+ * identisch hand-kopiert - jetzt eine gemeinsame Komponente, damit Größe/
+ * Farbe/Verhalten überall konsistent bleiben.
+ */
+@Composable
+fun FamlyIconTile(
+    icon: ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Int = 34,
+    iconSize: Int = 16,
+    background: Color = FamlyIconBackground,
+    tint: Color = FamlyTextPrimary
+) {
+    Box(
+        modifier = modifier
+            .size(size.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(iconSize.dp)
+        )
+    }
+}
+
+/**
+ * Pill-Button auf Basis von Material3 [Button] statt einer selbstgebauten
+ * Box+clickable-Kombination: dadurch gibt es automatisch Ripple/State-Layer,
+ * eine korrekte Mindest-Touch-Target-Größe und "Button"-Semantik für
+ * Screenreader - alles Dinge, die die alte Box-Variante nicht hatte.
+ */
 @Composable
 fun FamlyPrimaryButton(
     text: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit = {}
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(100.dp))
-            .background(FamlyPetrolPrimary)
-            .clickable(onClick = onClick)
-            .padding(vertical = 17.dp),
-        contentAlignment = Alignment.Center
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(100.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = FamlyPetrolPrimary,
+            contentColor = FamlyWhite
+        ),
+        contentPadding = PaddingValues(vertical = 17.dp)
     ) {
-        Text(text = text, color = FamlyWhite, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Text(text = text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     }
 }
 
@@ -82,18 +132,19 @@ fun FamlyPrimaryButton(
 fun FamlySecondaryButton(
     text: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit = {}
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(100.dp))
-            .border(1.dp, FamlyPetrolPrimary, RoundedCornerShape(100.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 13.dp),
-        contentAlignment = Alignment.Center
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(100.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, FamlyPetrolPrimary),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = FamlyPetrolPrimary),
+        contentPadding = PaddingValues(vertical = 13.dp)
     ) {
-        Text(text = text, color = FamlyPetrolPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+        Text(text = text, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
     }
 }
 

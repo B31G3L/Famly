@@ -63,7 +63,7 @@ fun OnboardingScreen(
             androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(top = 16.dp))
 
             Text(
-                text = "Willkommen bei Offshoot",
+                text = "Willkommen bei Famly",
                 style = MaterialTheme.typography.headlineMedium,
                 textAlign = TextAlign.Center
             )

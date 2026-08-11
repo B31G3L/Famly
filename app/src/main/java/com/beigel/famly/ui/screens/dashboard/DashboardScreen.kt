@@ -33,11 +33,17 @@ import com.beigel.famly.data.model.FamilyTree
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.ui.components.FamlyAvatar
 import com.beigel.famly.ui.theme.FamlyAccentOrange
+import com.beigel.famly.ui.theme.FamlyAccentYellow
 import com.beigel.famly.ui.theme.FamlyBackground
 import com.beigel.famly.ui.theme.FamlyGenColors
 import com.beigel.famly.ui.theme.FamlyHeaderGradientEnd
 import com.beigel.famly.ui.theme.FamlyHeaderGradientStart
+import com.beigel.famly.ui.theme.FamlyChipBackground
+import com.beigel.famly.ui.theme.FamlyPillBlueBackground
+import com.beigel.famly.ui.theme.FamlyPillBlueValue
+import com.beigel.famly.ui.theme.FamlyPillOrangeBackground
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
+import com.beigel.famly.ui.theme.FamlyStatusAlive
 import com.beigel.famly.ui.theme.FamlyTextPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyWhite
@@ -147,7 +153,7 @@ private fun HeaderSection(userName: String, onOpenSelf: () -> Unit) {
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                listOf(FamlyAccentOrange, Color(0xFFFFCA3A), Color(0xFF21B8A4)).forEach { dotColor ->
+                listOf(FamlyAccentOrange, FamlyAccentYellow, FamlyStatusAlive).forEach { dotColor ->
                     Box(modifier = Modifier.size(8.dp).clip(RoundedCornerShape(50)).background(dotColor))
                 }
             }
@@ -212,9 +218,9 @@ private fun TreeSummaryCard(
 @Composable
 private fun StatPillsRow(peopleCount: Int, generationCount: Int, newCount: Int) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        StatPill(value = peopleCount, label = "Personen", background = Color(0xFFEFE7FB), valueColor = FamlyPetrolPrimary, modifier = Modifier.weight(1f))
-        StatPill(value = generationCount, label = "Generationen", background = Color(0xFFE3F1FB), valueColor = Color(0xFF4D8CF0), modifier = Modifier.weight(1f))
-        StatPill(value = newCount, label = "Neu", background = Color(0xFFFFF0E2), valueColor = FamlyAccentOrange, modifier = Modifier.weight(1f))
+        StatPill(value = peopleCount, label = "Personen", background = FamlyChipBackground, valueColor = FamlyPetrolPrimary, modifier = Modifier.weight(1f))
+        StatPill(value = generationCount, label = "Generationen", background = FamlyPillBlueBackground, valueColor = FamlyPillBlueValue, modifier = Modifier.weight(1f))
+        StatPill(value = newCount, label = "Neu", background = FamlyPillOrangeBackground, valueColor = FamlyAccentOrange, modifier = Modifier.weight(1f))
     }
 }
 
