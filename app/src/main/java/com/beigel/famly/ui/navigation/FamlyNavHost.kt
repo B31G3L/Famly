@@ -1,5 +1,6 @@
 package com.beigel.famly.ui.navigation
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.navigation.navArgument
 import com.beigel.famly.data.auth.AuthRepository
 import com.beigel.famly.data.model.FamilyMember
 import com.beigel.famly.data.model.MemberStatus
+import com.beigel.famly.data.model.RelationType
 import com.beigel.famly.data.repository.FamilyRepository
 import com.beigel.famly.ui.components.FamlyBottomBar
 import com.beigel.famly.ui.components.FamlyBottomDestination
@@ -43,19 +45,26 @@ object FamlyRoutes {
     const val DASHBOARD = "dashboard"
     const val TREE = "tree?focusPersonId={focusPersonId}"
     const val PERSON_DETAIL = "person_detail/{personId}"
-    const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}"
+    const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}&relationType={relationType}"
     const val INVITE = "invite"
     const val PROFILE = "profile"
 
     fun personDetail(personId: String) = "person_detail/$personId"
-    fun addPerson(personId: String? = null, relativeOf: String? = null) =
-        "add_person?personId=${personId ?: ""}&relativeOf=${relativeOf ?: ""}"
-    fun addRelativeTo(personId: String) = addPerson(relativeOf = personId)
+    fun addPerson(personId: String? = null, relativeOf: String? = null, relationType: RelationType? = null) =
+        "add_person?personId=${personId ?: ""}&relativeOf=${relativeOf ?: ""}&relationType=${relationType?.name ?: ""}"
+    // "Kind hinzufügen": kein fester relationType, im Formular wird noch
+    // zwischen Tochter/Sohn gewählt.
+    fun addChildTo(personId: String) = addPerson(relativeOf = personId)
+    // Mama/Papa/Partner:in hinzufügen: relationType steht schon fest, das
+    // Formular überspringt die Auswahl komplett.
+    fun addRelativeTo(personId: String, relationType: RelationType) =
+        addPerson(relativeOf = personId, relationType = relationType)
     fun tree(focusPersonId: String? = null) = "tree?focusPersonId=${focusPersonId ?: ""}"
 }
 
 private val bottomBarRoutes = FamlyBottomDestination.entries.map { it.route }.toSet()
 private const val SELF_PERSON_ID = "ich"
+private const val TAG = "FamlyNavHost"
 
 @Composable
 fun FamlyNavHost(
@@ -107,12 +116,14 @@ fun FamlyNavHost(
     // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
     // danach nicht mehr zuverlässig.
     fun goToTreeFocusedOn(personId: String) {
+        Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
         pendingFocusPersonId = personId
         navController.navigate(FamlyRoutes.tree()) {
             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
             launchSingleTop = true
             restoreState = true
         }
+        Log.d(TAG, "navController.navigate(tree) abgeschickt")
     }
 
     Scaffold(
@@ -191,12 +202,36 @@ fun FamlyNavHost(
                 val personId = entry.arguments?.getString("personId")
                 val person = members.find { it.id == personId }
                 if (person != null) {
+                    // Fallback für Altbestand/unklare Fälle: falls motherId/fatherId
+                    // nicht gesetzt sind, aber parentIds trotzdem 1-2 Einträge hat
+                    // (z. B. Migration aus dem alten connections-Feld), die freien
+                    // Slots damit auffüllen statt fälschlich "+ hinzufügen" zu zeigen.
+                    val explicitMother = members.find { it.id == person.motherId }
+                    val explicitFather = members.find { it.id == person.fatherId }
+                    val unclassifiedParents = person.parentIds
+                        .filter { it != person.motherId && it != person.fatherId }
+                        .mapNotNull { id -> members.find { it.id == id } }
+                    val mother = explicitMother ?: unclassifiedParents.getOrNull(0)
+                    val father = explicitFather
+                        ?: unclassifiedParents.firstOrNull { it.id != mother?.id }
+                    val partner = members.find { it.id == person.partnerId }
+                    val children = members.filter { person.id in it.parentIds }
+
                     PersonDetailScreen(
                         person = person,
+                        mother = mother,
+                        father = father,
+                        partner = partner,
+                        children = children,
+                        canInvite = person.id != SELF_PERSON_ID,
                         onBack = { navController.popBackStack() },
                         onEdit = { navController.navigate(FamlyRoutes.addPerson(personId = person.id)) },
                         onInvite = { navController.navigate(FamlyRoutes.INVITE) },
-                        onAddRelative = { navController.navigate(FamlyRoutes.addRelativeTo(person.id)) }
+                        onOpenPerson = { target -> navController.navigate(FamlyRoutes.personDetail(target.id)) },
+                        onAddMother = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.MOTHER)) },
+                        onAddFather = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.FATHER)) },
+                        onAddPartner = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.PARTNER)) },
+                        onAddChild = { navController.navigate(FamlyRoutes.addChildTo(person.id)) }
                     )
                 }
             }
@@ -213,11 +248,18 @@ fun FamlyNavHost(
                         type = NavType.StringType
                         nullable = true
                         defaultValue = null
+                    },
+                    navArgument("relationType") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
                     }
                 )
             ) { entry ->
                 val personId = entry.arguments?.getString("personId")?.takeIf { it.isNotBlank() }
                 val relativeOfId = entry.arguments?.getString("relativeOf")?.takeIf { it.isNotBlank() }
+                val presetRelationType = entry.arguments?.getString("relationType")?.takeIf { it.isNotBlank() }
+                    ?.let { raw -> runCatching { RelationType.valueOf(raw) }.getOrNull() }
                 val existingPerson = members.find { it.id == personId }
                 val relativeOfPerson = members.find { it.id == relativeOfId }
                 // "Ich" darf nie löschbar sein - egal auf welchem Weg das Formular
@@ -227,14 +269,17 @@ fun FamlyNavHost(
                 AddPersonScreen(
                     existingPerson = existingPerson,
                     relativeOf = relativeOfPerson,
+                    presetRelationType = presetRelationType,
                     onClose = { navController.popBackStack() },
                     onSave = { result ->
                         // Doppel-Tap auf "Speichern" wuerde sonst zwei Personen
                         // anlegen - der Firestore-Aufruf ist asynchron.
+                        Log.d(TAG, "onSave getriggert, isSaving=$isSaving, existingPerson=${existingPerson?.id}, relativeOf=${relativeOfPerson?.id}, relationType=${result.relationType}")
                         if (!isSaving) {
                             isSaving = true
                             coroutineScope.launch {
                                 if (existingPerson != null) {
+                                    Log.d(TAG, "updatePerson(${existingPerson.id}) wird aufgerufen")
                                     familyRepository.updatePerson(
                                         id = existingPerson.id,
                                         name = result.name,
@@ -244,8 +289,10 @@ fun FamlyNavHost(
                                         deathDate = result.deathDate,
                                         bio = result.bio
                                     ).onSuccess {
+                                        Log.d(TAG, "updatePerson erfolgreich, navigiere zum Baum")
                                         goToTreeFocusedOn(existingPerson.id)
                                     }.onFailure { error ->
+                                        Log.e(TAG, "updatePerson fehlgeschlagen", error)
                                         Toast.makeText(
                                             context,
                                             "Speichern fehlgeschlagen: ${error.message}",
@@ -253,6 +300,7 @@ fun FamlyNavHost(
                                         ).show()
                                     }
                                 } else if (relativeOfPerson != null && result.relationType != null) {
+                                    Log.d(TAG, "addPerson(relativeOf=${relativeOfPerson.id}, relationType=${result.relationType}) wird aufgerufen")
                                     familyRepository.addPerson(
                                         name = result.name,
                                         birthDate = result.birthDate,
@@ -263,14 +311,25 @@ fun FamlyNavHost(
                                         relativeOfId = relativeOfPerson.id,
                                         relationType = result.relationType
                                     ).onSuccess { newPerson ->
+                                        Log.d(TAG, "addPerson erfolgreich, neue Person=${newPerson.id}, navigiere zum Baum")
                                         goToTreeFocusedOn(newPerson.id)
                                     }.onFailure { error ->
+                                        Log.e(TAG, "addPerson fehlgeschlagen", error)
                                         Toast.makeText(
                                             context,
                                             "Speichern fehlgeschlagen: ${error.message}",
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }
+                                } else {
+                                    // Sollte über die Buttons nie erreichbar sein, aber
+                                    // falls doch: sichtbar machen statt still zu verpuffen.
+                                    Log.w(TAG, "onSave: weder existingPerson noch (relativeOf+relationType) gesetzt - nichts gespeichert")
+                                    Toast.makeText(
+                                        context,
+                                        "Konnte nicht speichern: fehlende Zuordnung",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                                 isSaving = false
                             }

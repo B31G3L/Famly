@@ -69,10 +69,18 @@ private val displayFormat = SimpleDateFormat("dd.MM.yyyy", Locale.GERMANY).apply
     timeZone = TimeZone.getTimeZone("UTC")
 }
 
+/** Beziehungstypen, die in der "Kind hinzufügen"-Ansicht zur Auswahl stehen. */
+private val childRelationTypes = listOf(RelationType.DAUGHTER, RelationType.SON)
+
 @Composable
 fun AddPersonScreen(
     existingPerson: Person?,
     relativeOf: Person? = null,
+    // Wird gesetzt, wenn der Flow bereits eindeutig ist (Mama/Papa/Partner:in
+    // hinzufügen aus dem PersonDetailScreen) - dann entfällt die Chip-Auswahl
+    // komplett. Bleibt null für "Kind hinzufügen", da dort noch
+    // Tochter/Sohn gewählt werden muss.
+    presetRelationType: RelationType? = null,
     onClose: () -> Unit,
     onSave: (PersonFormResult) -> Unit,
     onDelete: (() -> Unit)? = null
@@ -84,13 +92,14 @@ fun AddPersonScreen(
     var bio by remember { mutableStateOf(existingPerson?.bio.orEmpty()) }
     var isDeceased by remember { mutableStateOf(existingPerson?.isDeceased ?: false) }
     var deathDateText by remember { mutableStateOf(existingPerson?.deathDate.orEmpty()) }
-    var relationType by remember { mutableStateOf<RelationType?>(null) }
+    var relationType by remember { mutableStateOf(presetRelationType) }
     var showBirthDatePicker by remember { mutableStateOf(false) }
     var showDeathDatePicker by remember { mutableStateOf(false) }
 
     val isEditMode = existingPerson != null
     val isRelativeFlow = !isEditMode && relativeOf != null
-    val canSave = name.isNotBlank() && (!isRelativeFlow || relationType != null)
+    val needsRelationChoice = isRelativeFlow && presetRelationType == null
+    val canSave = name.isNotBlank() && (!needsRelationChoice || relationType != null)
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -111,7 +120,8 @@ fun AddPersonScreen(
             Text(
                 when {
                     isEditMode -> "Person bearbeiten"
-                    isRelativeFlow -> "Verwandte:n hinzufügen"
+                    presetRelationType != null -> "${presetRelationType.label} hinzufügen"
+                    isRelativeFlow -> "Kind hinzufügen"
                     else -> "Person hinzufügen"
                 },
                 style = MaterialTheme.typography.labelLarge
@@ -129,7 +139,7 @@ fun AddPersonScreen(
                         name.isBlank() -> {
                             Toast.makeText(context, "Bitte einen Namen eingeben", Toast.LENGTH_SHORT).show()
                         }
-                        isRelativeFlow && relationType == null -> {
+                        needsRelationChoice && relationType == null -> {
                             Toast.makeText(context, "Bitte eine Beziehung auswählen", Toast.LENGTH_SHORT).show()
                         }
                         else -> {
@@ -174,7 +184,7 @@ fun AddPersonScreen(
                 }
             }
 
-            if (isRelativeFlow && relativeOf != null) {
+            if (needsRelationChoice && relativeOf != null) {
                 Column {
                     Text(
                         "Beziehung zu ${relativeOf.name}",
@@ -183,7 +193,7 @@ fun AddPersonScreen(
                     )
                     Spacer(modifier = Modifier.padding(top = 8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        RelationType.entries.forEach { type ->
+                        childRelationTypes.forEach { type ->
                             RelationTypeChip(
                                 label = type.label,
                                 selected = relationType == type,
@@ -192,6 +202,12 @@ fun AddPersonScreen(
                         }
                     }
                 }
+            } else if (isRelativeFlow && relativeOf != null && presetRelationType != null) {
+                Text(
+                    "${presetRelationType.label} von ${relativeOf.name}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = FamlyTextSecondary
+                )
             }
 
             FormField(label = "Name", value = name, onValueChange = { name = it }, placeholder = "z. B. Lena Müller")

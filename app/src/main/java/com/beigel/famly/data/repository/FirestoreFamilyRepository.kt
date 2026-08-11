@@ -1,5 +1,6 @@
 package com.beigel.famly.data.repository
 
+import android.util.Log
 import com.beigel.famly.data.auth.AuthRepository
 import com.beigel.famly.data.model.AvatarAccent
 import com.beigel.famly.data.model.FamilyTree
@@ -26,6 +27,7 @@ private const val COLLECTION_PERSONS = "persons"
 private const val SELF_PERSON_ID = "ich"
 private const val FIELD_FAMILY_ID = "familyId"
 private const val FIELD_INVITE_CODE = "inviteCode"
+private const val TAG = "FirestoreFamilyRepo"
 
 /**
  * Firestore-Datenmodell:
@@ -290,11 +292,41 @@ class FirestoreFamilyRepository(
         val relativeOf = members.find { it.id == relativeOfId } ?: error("Ausgangsperson nicht gefunden")
         val treePosition = positionRelativeTo(members, relativeOf, relationType)
         val relation = inferRelationToSelf(relativeOf.relation, relationType)
+
         // Mama/Papa: die neue Person IST ein Elternteil von relativeOf ->
-        // die Rück-Referenz kommt auf relativeOf (relativeOf.parentIds += id).
-        // Tochter/Sohn: die neue Person HAT relativeOf als Elternteil ->
-        // die Referenz kommt direkt auf die neue Person.
+        // die Rück-Referenz kommt auf relativeOf (parentIds += id, plus
+        // motherId/fatherId für die direkte Anzeige im Detail-Screen).
+        // Tochter/Sohn: die neue Person HAT relativeOf (und ggf. dessen
+        // Partner:in) als Elternteil -> die Referenz kommt direkt auf die
+        // neue Person, inkl. motherId/fatherId falls das Geschlecht von
+        // relativeOf/dessen Partner:in bekannt ist.
+        // Partner:in: gleiche Generation, keine Eltern-Kind-Beziehung ->
+        // partnerId wird auf beiden Seiten gesetzt.
         val newPersonIsParent = relationType.generationOffset < 0
+        val isPartnerRelation = relationType == RelationType.PARTNER
+
+        val partnerOfRelativeOf = relativeOf.partnerId?.let { pid -> members.find { it.id == pid } }
+
+        val newPersonParentIds = when {
+            isPartnerRelation -> emptyList()
+            newPersonIsParent -> emptyList()
+            else -> listOfNotNull(relativeOf.id, partnerOfRelativeOf?.id).distinct()
+        }
+
+        // motherId/fatherId der NEUEN Person (nur im Kind-Fall relevant):
+        // aus relativeOf und dessen Partner:in ableiten, sofern deren
+        // Geschlecht bekannt ist.
+        var newPersonMotherId: String? = null
+        var newPersonFatherId: String? = null
+        if (!newPersonIsParent && !isPartnerRelation) {
+            listOfNotNull(relativeOf, partnerOfRelativeOf).forEach { parent ->
+                when (parent.isFemale) {
+                    true -> newPersonMotherId = newPersonMotherId ?: parent.id
+                    false -> newPersonFatherId = newPersonFatherId ?: parent.id
+                    null -> Unit
+                }
+            }
+        }
 
         val person = Person(
             id = id,
@@ -308,25 +340,40 @@ class FirestoreFamilyRepository(
             deathDate = deathDate,
             bio = bio,
             connections = listOf(relativeOf.name),
-            parentIds = if (newPersonIsParent) emptyList() else listOf(relativeOf.id),
+            parentIds = newPersonParentIds,
+            motherId = newPersonMotherId,
+            fatherId = newPersonFatherId,
+            partnerId = if (isPartnerRelation) relativeOf.id else null,
+            isFemale = relationType.isFemale,
             treePosition = treePosition
         )
 
         val familyPersonsRef = firestore.collection(COLLECTION_FAMILIES).document(familyId)
             .collection(COLLECTION_PERSONS)
 
+        Log.d(TAG, "addPerson: starte Batch-Commit für neue Person $id (relationType=$relationType, relativeOf=${relativeOf.id})")
         firestore.runBatch { batch ->
             batch.set(familyPersonsRef.document(id), person.toFirestoreMap())
-            if (newPersonIsParent) {
-                batch.update(
-                    familyPersonsRef.document(relativeOf.id),
-                    "parentIds",
-                    FieldValue.arrayUnion(id)
-                )
+            when {
+                newPersonIsParent -> {
+                    val relativeOfRef = familyPersonsRef.document(relativeOf.id)
+                    batch.update(relativeOfRef, "parentIds", FieldValue.arrayUnion(id))
+                    when (relationType) {
+                        RelationType.MOTHER -> batch.update(relativeOfRef, "motherId", id)
+                        RelationType.FATHER -> batch.update(relativeOfRef, "fatherId", id)
+                        else -> Unit
+                    }
+                }
+                isPartnerRelation -> {
+                    batch.update(familyPersonsRef.document(relativeOf.id), "partnerId", id)
+                }
             }
         }.await()
+        Log.d(TAG, "addPerson: Batch-Commit für $id erfolgreich abgeschlossen")
 
         person
+    }.also { result ->
+        result.onFailure { error -> Log.e(TAG, "addPerson fehlgeschlagen", error) }
     }
 
     override suspend fun updatePerson(
@@ -459,8 +506,11 @@ class FirestoreFamilyRepository(
      * mütterlicher Linie) fällt es auf eine generische Bezeichnung zurück.
      */
     private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
+        if (type == RelationType.PARTNER) {
+            return if (baseRelation == "Ich") "Partner:in" else "Partner:in von $baseRelation"
+        }
         val addsParent = type.generationOffset < 0
-        fun pick(female: String, male: String) = if (type.isFemale) female else male
+        fun pick(female: String, male: String) = if (type.isFemale == true) female else male
 
         return when (baseRelation) {
             "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")

@@ -104,10 +104,19 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
     val parentIds = unions.keys.flatten().toSet()
     val dsu = Dsu()
     unions.keys.forEach { key -> key.drop(1).forEach { dsu.union(key.first(), it) } }
+    // Partner:innen ohne gemeinsame Kinder (partnerId gesetzt, aber kein
+    // eigener Eintrag in `unions`) trotzdem als Block zusammenfassen, damit
+    // sie im Baum nebeneinander stehen und eine Paar-Linie bekommen.
+    val partnerOnlyPairs = people.mapNotNull { person ->
+        val partnerId = person.partnerId?.takeIf { byId.containsKey(it) } ?: return@mapNotNull null
+        if (person.id < partnerId) person.id to partnerId else null
+    }
+    partnerOnlyPairs.forEach { (a, b) -> dsu.union(a, b) }
 
+    val blockParticipantIds = parentIds + partnerOnlyPairs.flatMap { (a, b) -> listOf(a, b) }
     val blockOf = HashMap<String, String>()
     ordered.forEach { person ->
-        blockOf[person.id] = if (person.id in parentIds) "u:${dsu.find(person.id)}" else "p:${person.id}"
+        blockOf[person.id] = if (person.id in blockParticipantIds) "u:${dsu.find(person.id)}" else "p:${person.id}"
     }
 
     val blockMembers = LinkedHashMap<String, MutableList<Person>>()
@@ -198,6 +207,17 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
     // --- 6) Linien ------------------------------------------------------------
     val nodeById = nodes.associateBy { it.person.id }
     val links = mutableListOf<TreeLink>()
+    partnerOnlyPairs.forEach { (a, b) ->
+        val first = nodeById[a] ?: return@forEach
+        val second = nodeById[b] ?: return@forEach
+        links += TreeLink(
+            points = listOf(
+                Offset(first.centerX, first.centerY),
+                Offset(second.centerX, second.centerY)
+            ),
+            isPartner = true
+        )
+    }
     unions.forEach { (parents, children) ->
         val parentNodes = parents.mapNotNull { nodeById[it] }.sortedBy { it.x }
         val childNodes = children.mapNotNull { nodeById[it] }.sortedBy { it.x }

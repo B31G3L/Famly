@@ -24,6 +24,10 @@ internal fun Person.toFirestoreMap(): Map<String, Any?> = mapOf(
     "bio" to bio,
     "connections" to connections,
     "parentIds" to parentIds,
+    "motherId" to motherId,
+    "fatherId" to fatherId,
+    "partnerId" to partnerId,
+    "isFemale" to isFemale,
     "treeGeneration" to treePosition?.generation,
     "treeSlot" to treePosition?.slot,
     "uid" to uid
@@ -49,6 +53,10 @@ internal fun DocumentSnapshot.toPerson(): Person? {
         bio = getString("bio").orEmpty(),
         connections = (get("connections") as? List<*>)?.filterIsInstance<String>().orEmpty(),
         parentIds = (get("parentIds") as? List<*>)?.filterIsInstance<String>().orEmpty(),
+        motherId = getString("motherId"),
+        fatherId = getString("fatherId"),
+        partnerId = getString("partnerId"),
+        isFemale = getBoolean("isFemale"),
         treePosition = if (generation != null && slot != null) TreePosition(generation, slot) else null,
         uid = getString("uid")
     )

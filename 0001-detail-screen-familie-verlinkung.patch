@@ -1,0 +1,909 @@
+From 311f443cab647cba083e030d4aca4522ecdb1fd5 Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 20:37:17 +0000
+Subject: [PATCH 1/3] PersonDetailScreen: Mama/Papa/Partner/Kinder statt
+ generischem Verwandte-Button
+
+- Person: motherId/fatherId/partnerId/isFemale ergaenzt
+- RelationType: PARTNER (gleiche Generation) hinzugefuegt
+- Firestore-/FakeRepository: addPerson setzt die neuen Felder je nach
+  RelationType (Mama/Papa -> motherId/fatherId auf Ausgangsperson,
+  Partner -> partnerId beidseitig, Kind -> parentIds inkl. Partner der
+  Ausgangsperson + abgeleitetes motherId/fatherId)
+- TreeLayout: Partner:innen ohne gemeinsame Kinder werden als Block
+  zusammengefasst und mit Paar-Linie verbunden
+- AddPersonScreen: presetRelationType ueberspringt die Chip-Auswahl bei
+  Mama/Papa/Partner, Kind-Flow zeigt nur Tochter/Sohn
+- PersonDetailScreen: Familie-Karte mit Mama/Papa/Partner:in-Zeilen und
+  Kinder-Liste statt '+ Verwandte:n hinzufuegen'
+- FamlyNavHost: Route um relationType erweitert, Mama/Papa/Partner/
+  Kinder werden aus den Mitgliedern abgeleitet (inkl. Fallback fuer
+  Altbestand ohne motherId/fatherId)
+---
+ .../com/beigel/famly/data/model/Person.kt     |  22 ++-
+ .../data/repository/FakeFamilyRepository.kt   |  49 ++++++-
+ .../repository/FirestoreFamilyRepository.kt   |  66 +++++++--
+ .../famly/data/repository/PersonMapper.kt     |   8 ++
+ .../famly/ui/navigation/FamlyNavHost.kt       |  48 ++++++-
+ .../ui/screens/addperson/AddPersonScreen.kt   |  28 +++-
+ .../persondetail/PersonDetailScreen.kt        | 127 +++++++++++++++++-
+ .../famly/ui/screens/tree/TreeLayout.kt       |  22 ++-
+ 8 files changed, 338 insertions(+), 32 deletions(-)
+
+diff --git a/app/src/main/java/com/beigel/famly/data/model/Person.kt b/app/src/main/java/com/beigel/famly/data/model/Person.kt
+index 683295f..906f83c 100644
+--- a/app/src/main/java/com/beigel/famly/data/model/Person.kt
++++ b/app/src/main/java/com/beigel/famly/data/model/Person.kt
+@@ -26,6 +26,25 @@ data class Person(
+     val bio: String = "",
+     val connections: List<String> = emptyList(),
+     val parentIds: List<String> = emptyList(),
++    /**
++     * Direkte Referenzen auf Mama/Papa/Partner:in, zusätzlich zum generischen
++     * [parentIds] (das weiterhin die "Wahrheit" fürs Baum-Layout ist). Diese
++     * drei Felder dienen nur der Anzeige im PersonDetailScreen ("Mama",
++     * "Papa", "Partner:in" als eigene Zeilen statt eines generischen
++     * "Verwandte hinzufügen"). Bleiben null für Altbestand oder wenn die
++     * Zuordnung nicht eindeutig bekannt ist (siehe [FamlyNavHost]-Fallback).
++     */
++    val motherId: String? = null,
++    val fatherId: String? = null,
++    val partnerId: String? = null,
++    /**
++     * Bekanntes Geschlecht, sofern beim Anlegen über einen geschlechtsspezifischen
++     * [RelationType] (Mama/Papa/Tochter/Sohn) ableitbar. Wird u. a. genutzt, um
++     * beim Hinzufügen eines Kindes automatisch motherId/fatherId auf der neuen
++     * Person zu setzen. Bleibt null für "Ich" und für Partner:innen ohne
++     * angegebenes Geschlecht.
++     */
++    val isFemale: Boolean? = null,
+     val treePosition: TreePosition? = null,
+     /**
+      * UID des verknüpften Firebase-Accounts, falls diese Person tatsächlich
+@@ -71,9 +90,10 @@ enum class MemberStatus {
+  * zu "Ich" - die automatisch ermittelte Bezeichnung (siehe
+  * [FamilyRepository]/[FirestoreFamilyRepository]).
+  */
+-enum class RelationType(val label: String, val generationOffset: Int, val isFemale: Boolean) {
++enum class RelationType(val label: String, val generationOffset: Int, val isFemale: Boolean?) {
+     MOTHER("Mama", -1, true),
+     FATHER("Papa", -1, false),
++    PARTNER("Partner:in", 0, null),
+     DAUGHTER("Tochter", +1, true),
+     SON("Sohn", +1, false)
+ }
+\ No newline at end of file
+diff --git a/app/src/main/java/com/beigel/famly/data/repository/FakeFamilyRepository.kt b/app/src/main/java/com/beigel/famly/data/repository/FakeFamilyRepository.kt
+index 76425c9..343e63e 100644
+--- a/app/src/main/java/com/beigel/famly/data/repository/FakeFamilyRepository.kt
++++ b/app/src/main/java/com/beigel/famly/data/repository/FakeFamilyRepository.kt
+@@ -77,8 +77,30 @@ class FakeFamilyRepository : FamilyRepository {
+         val treePosition = TreePosition(targetGeneration, (usedSlots.maxOrNull() ?: -1) + 1)
+         val relation = inferRelationToSelf(relativeOf.relation, relationType)
+ 
++        val newPersonIsParent = relationType.generationOffset < 0
++        val isPartnerRelation = relationType == RelationType.PARTNER
++        val partnerOfRelativeOf = relativeOf.partnerId?.let { pid -> members.find { it.id == pid } }
++
++        val newPersonParentIds = when {
++            isPartnerRelation || newPersonIsParent -> emptyList()
++            else -> listOfNotNull(relativeOf.id, partnerOfRelativeOf?.id).distinct()
++        }
++
++        var newPersonMotherId: String? = null
++        var newPersonFatherId: String? = null
++        if (!newPersonIsParent && !isPartnerRelation) {
++            listOfNotNull(relativeOf, partnerOfRelativeOf).forEach { parent ->
++                when (parent.isFemale) {
++                    true -> newPersonMotherId = newPersonMotherId ?: parent.id
++                    false -> newPersonFatherId = newPersonFatherId ?: parent.id
++                    null -> Unit
++                }
++            }
++        }
++
++        val id = UUID.randomUUID().toString()
+         val person = Person(
+-            id = UUID.randomUUID().toString(),
++            id = id,
+             name = name,
+             initial = name.trim().firstOrNull()?.uppercase() ?: "?",
+             relation = relation,
+@@ -89,9 +111,27 @@ class FakeFamilyRepository : FamilyRepository {
+             deathDate = deathDate,
+             bio = bio,
+             connections = listOf(relativeOf.name),
++            parentIds = newPersonParentIds,
++            motherId = newPersonMotherId,
++            fatherId = newPersonFatherId,
++            partnerId = if (isPartnerRelation) relativeOf.id else null,
++            isFemale = relationType.isFemale,
+             treePosition = treePosition
+         )
+-        _familyTree.update { it.copy(members = it.members + person, memberCount = it.members.size + 1) }
++        _familyTree.update { tree ->
++            val updatedMembers = tree.members.map { existing ->
++                when {
++                    newPersonIsParent && existing.id == relativeOf.id -> existing.copy(
++                        parentIds = existing.parentIds + id,
++                        motherId = if (relationType == RelationType.MOTHER) id else existing.motherId,
++                        fatherId = if (relationType == RelationType.FATHER) id else existing.fatherId
++                    )
++                    isPartnerRelation && existing.id == relativeOf.id -> existing.copy(partnerId = id)
++                    else -> existing
++                }
++            }
++            tree.copy(members = updatedMembers + person, memberCount = updatedMembers.size + 1)
++        }
+         person
+     }
+ 
+@@ -119,8 +159,11 @@ class FakeFamilyRepository : FamilyRepository {
+     }
+ 
+     private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
++        if (type == RelationType.PARTNER) {
++            return if (baseRelation == "Ich") "Partner:in" else "Partner:in von $baseRelation"
++        }
+         val addsParent = type.generationOffset < 0
+-        fun pick(female: String, male: String) = if (type.isFemale) female else male
++        fun pick(female: String, male: String) = if (type.isFemale == true) female else male
+ 
+         return when (baseRelation) {
+             "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")
+diff --git a/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt b/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
+index 4eb940d..b31a351 100644
+--- a/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
++++ b/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
+@@ -290,11 +290,41 @@ class FirestoreFamilyRepository(
+         val relativeOf = members.find { it.id == relativeOfId } ?: error("Ausgangsperson nicht gefunden")
+         val treePosition = positionRelativeTo(members, relativeOf, relationType)
+         val relation = inferRelationToSelf(relativeOf.relation, relationType)
++
+         // Mama/Papa: die neue Person IST ein Elternteil von relativeOf ->
+-        // die Rück-Referenz kommt auf relativeOf (relativeOf.parentIds += id).
+-        // Tochter/Sohn: die neue Person HAT relativeOf als Elternteil ->
+-        // die Referenz kommt direkt auf die neue Person.
++        // die Rück-Referenz kommt auf relativeOf (parentIds += id, plus
++        // motherId/fatherId für die direkte Anzeige im Detail-Screen).
++        // Tochter/Sohn: die neue Person HAT relativeOf (und ggf. dessen
++        // Partner:in) als Elternteil -> die Referenz kommt direkt auf die
++        // neue Person, inkl. motherId/fatherId falls das Geschlecht von
++        // relativeOf/dessen Partner:in bekannt ist.
++        // Partner:in: gleiche Generation, keine Eltern-Kind-Beziehung ->
++        // partnerId wird auf beiden Seiten gesetzt.
+         val newPersonIsParent = relationType.generationOffset < 0
++        val isPartnerRelation = relationType == RelationType.PARTNER
++
++        val partnerOfRelativeOf = relativeOf.partnerId?.let { pid -> members.find { it.id == pid } }
++
++        val newPersonParentIds = when {
++            isPartnerRelation -> emptyList()
++            newPersonIsParent -> emptyList()
++            else -> listOfNotNull(relativeOf.id, partnerOfRelativeOf?.id).distinct()
++        }
++
++        // motherId/fatherId der NEUEN Person (nur im Kind-Fall relevant):
++        // aus relativeOf und dessen Partner:in ableiten, sofern deren
++        // Geschlecht bekannt ist.
++        var newPersonMotherId: String? = null
++        var newPersonFatherId: String? = null
++        if (!newPersonIsParent && !isPartnerRelation) {
++            listOfNotNull(relativeOf, partnerOfRelativeOf).forEach { parent ->
++                when (parent.isFemale) {
++                    true -> newPersonMotherId = newPersonMotherId ?: parent.id
++                    false -> newPersonFatherId = newPersonFatherId ?: parent.id
++                    null -> Unit
++                }
++            }
++        }
+ 
+         val person = Person(
+             id = id,
+@@ -308,7 +338,11 @@ class FirestoreFamilyRepository(
+             deathDate = deathDate,
+             bio = bio,
+             connections = listOf(relativeOf.name),
+-            parentIds = if (newPersonIsParent) emptyList() else listOf(relativeOf.id),
++            parentIds = newPersonParentIds,
++            motherId = newPersonMotherId,
++            fatherId = newPersonFatherId,
++            partnerId = if (isPartnerRelation) relativeOf.id else null,
++            isFemale = relationType.isFemale,
+             treePosition = treePosition
+         )
+ 
+@@ -317,12 +351,19 @@ class FirestoreFamilyRepository(
+ 
+         firestore.runBatch { batch ->
+             batch.set(familyPersonsRef.document(id), person.toFirestoreMap())
+-            if (newPersonIsParent) {
+-                batch.update(
+-                    familyPersonsRef.document(relativeOf.id),
+-                    "parentIds",
+-                    FieldValue.arrayUnion(id)
+-                )
++            when {
++                newPersonIsParent -> {
++                    val relativeOfRef = familyPersonsRef.document(relativeOf.id)
++                    batch.update(relativeOfRef, "parentIds", FieldValue.arrayUnion(id))
++                    when (relationType) {
++                        RelationType.MOTHER -> batch.update(relativeOfRef, "motherId", id)
++                        RelationType.FATHER -> batch.update(relativeOfRef, "fatherId", id)
++                        else -> Unit
++                    }
++                }
++                isPartnerRelation -> {
++                    batch.update(familyPersonsRef.document(relativeOf.id), "partnerId", id)
++                }
+             }
+         }.await()
+ 
+@@ -459,8 +500,11 @@ class FirestoreFamilyRepository(
+      * mütterlicher Linie) fällt es auf eine generische Bezeichnung zurück.
+      */
+     private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
++        if (type == RelationType.PARTNER) {
++            return if (baseRelation == "Ich") "Partner:in" else "Partner:in von $baseRelation"
++        }
+         val addsParent = type.generationOffset < 0
+-        fun pick(female: String, male: String) = if (type.isFemale) female else male
++        fun pick(female: String, male: String) = if (type.isFemale == true) female else male
+ 
+         return when (baseRelation) {
+             "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")
+diff --git a/app/src/main/java/com/beigel/famly/data/repository/PersonMapper.kt b/app/src/main/java/com/beigel/famly/data/repository/PersonMapper.kt
+index f12ad60..0cced84 100644
+--- a/app/src/main/java/com/beigel/famly/data/repository/PersonMapper.kt
++++ b/app/src/main/java/com/beigel/famly/data/repository/PersonMapper.kt
+@@ -24,6 +24,10 @@ internal fun Person.toFirestoreMap(): Map<String, Any?> = mapOf(
+     "bio" to bio,
+     "connections" to connections,
+     "parentIds" to parentIds,
++    "motherId" to motherId,
++    "fatherId" to fatherId,
++    "partnerId" to partnerId,
++    "isFemale" to isFemale,
+     "treeGeneration" to treePosition?.generation,
+     "treeSlot" to treePosition?.slot,
+     "uid" to uid
+@@ -49,6 +53,10 @@ internal fun DocumentSnapshot.toPerson(): Person? {
+         bio = getString("bio").orEmpty(),
+         connections = (get("connections") as? List<*>)?.filterIsInstance<String>().orEmpty(),
+         parentIds = (get("parentIds") as? List<*>)?.filterIsInstance<String>().orEmpty(),
++        motherId = getString("motherId"),
++        fatherId = getString("fatherId"),
++        partnerId = getString("partnerId"),
++        isFemale = getBoolean("isFemale"),
+         treePosition = if (generation != null && slot != null) TreePosition(generation, slot) else null,
+         uid = getString("uid")
+     )
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index aed46ba..ad048fd 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -25,6 +25,7 @@ import androidx.navigation.navArgument
+ import com.beigel.famly.data.auth.AuthRepository
+ import com.beigel.famly.data.model.FamilyMember
+ import com.beigel.famly.data.model.MemberStatus
++import com.beigel.famly.data.model.RelationType
+ import com.beigel.famly.data.repository.FamilyRepository
+ import com.beigel.famly.ui.components.FamlyBottomBar
+ import com.beigel.famly.ui.components.FamlyBottomDestination
+@@ -43,14 +44,20 @@ object FamlyRoutes {
+     const val DASHBOARD = "dashboard"
+     const val TREE = "tree?focusPersonId={focusPersonId}"
+     const val PERSON_DETAIL = "person_detail/{personId}"
+-    const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}"
++    const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}&relationType={relationType}"
+     const val INVITE = "invite"
+     const val PROFILE = "profile"
+ 
+     fun personDetail(personId: String) = "person_detail/$personId"
+-    fun addPerson(personId: String? = null, relativeOf: String? = null) =
+-        "add_person?personId=${personId ?: ""}&relativeOf=${relativeOf ?: ""}"
+-    fun addRelativeTo(personId: String) = addPerson(relativeOf = personId)
++    fun addPerson(personId: String? = null, relativeOf: String? = null, relationType: RelationType? = null) =
++        "add_person?personId=${personId ?: ""}&relativeOf=${relativeOf ?: ""}&relationType=${relationType?.name ?: ""}"
++    // "Kind hinzufügen": kein fester relationType, im Formular wird noch
++    // zwischen Tochter/Sohn gewählt.
++    fun addChildTo(personId: String) = addPerson(relativeOf = personId)
++    // Mama/Papa/Partner:in hinzufügen: relationType steht schon fest, das
++    // Formular überspringt die Auswahl komplett.
++    fun addRelativeTo(personId: String, relationType: RelationType) =
++        addPerson(relativeOf = personId, relationType = relationType)
+     fun tree(focusPersonId: String? = null) = "tree?focusPersonId=${focusPersonId ?: ""}"
+ }
+ 
+@@ -191,12 +198,35 @@ fun FamlyNavHost(
+                 val personId = entry.arguments?.getString("personId")
+                 val person = members.find { it.id == personId }
+                 if (person != null) {
++                    // Fallback für Altbestand/unklare Fälle: falls motherId/fatherId
++                    // nicht gesetzt sind, aber parentIds trotzdem 1-2 Einträge hat
++                    // (z. B. Migration aus dem alten connections-Feld), die freien
++                    // Slots damit auffüllen statt fälschlich "+ hinzufügen" zu zeigen.
++                    val explicitMother = members.find { it.id == person.motherId }
++                    val explicitFather = members.find { it.id == person.fatherId }
++                    val unclassifiedParents = person.parentIds
++                        .filter { it != person.motherId && it != person.fatherId }
++                        .mapNotNull { id -> members.find { it.id == id } }
++                    val mother = explicitMother ?: unclassifiedParents.getOrNull(0)
++                    val father = explicitFather
++                        ?: unclassifiedParents.firstOrNull { it.id != mother?.id }
++                    val partner = members.find { it.id == person.partnerId }
++                    val children = members.filter { person.id in it.parentIds }
++
+                     PersonDetailScreen(
+                         person = person,
++                        mother = mother,
++                        father = father,
++                        partner = partner,
++                        children = children,
+                         onBack = { navController.popBackStack() },
+                         onEdit = { navController.navigate(FamlyRoutes.addPerson(personId = person.id)) },
+                         onInvite = { navController.navigate(FamlyRoutes.INVITE) },
+-                        onAddRelative = { navController.navigate(FamlyRoutes.addRelativeTo(person.id)) }
++                        onOpenPerson = { target -> navController.navigate(FamlyRoutes.personDetail(target.id)) },
++                        onAddMother = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.MOTHER)) },
++                        onAddFather = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.FATHER)) },
++                        onAddPartner = { navController.navigate(FamlyRoutes.addRelativeTo(person.id, RelationType.PARTNER)) },
++                        onAddChild = { navController.navigate(FamlyRoutes.addChildTo(person.id)) }
+                     )
+                 }
+             }
+@@ -213,11 +243,18 @@ fun FamlyNavHost(
+                         type = NavType.StringType
+                         nullable = true
+                         defaultValue = null
++                    },
++                    navArgument("relationType") {
++                        type = NavType.StringType
++                        nullable = true
++                        defaultValue = null
+                     }
+                 )
+             ) { entry ->
+                 val personId = entry.arguments?.getString("personId")?.takeIf { it.isNotBlank() }
+                 val relativeOfId = entry.arguments?.getString("relativeOf")?.takeIf { it.isNotBlank() }
++                val presetRelationType = entry.arguments?.getString("relationType")?.takeIf { it.isNotBlank() }
++                    ?.let { raw -> runCatching { RelationType.valueOf(raw) }.getOrNull() }
+                 val existingPerson = members.find { it.id == personId }
+                 val relativeOfPerson = members.find { it.id == relativeOfId }
+                 // "Ich" darf nie löschbar sein - egal auf welchem Weg das Formular
+@@ -227,6 +264,7 @@ fun FamlyNavHost(
+                 AddPersonScreen(
+                     existingPerson = existingPerson,
+                     relativeOf = relativeOfPerson,
++                    presetRelationType = presetRelationType,
+                     onClose = { navController.popBackStack() },
+                     onSave = { result ->
+                         // Doppel-Tap auf "Speichern" wuerde sonst zwei Personen
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/addperson/AddPersonScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/addperson/AddPersonScreen.kt
+index 5ae8628..60d0ed0 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/addperson/AddPersonScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/addperson/AddPersonScreen.kt
+@@ -69,10 +69,18 @@ private val displayFormat = SimpleDateFormat("dd.MM.yyyy", Locale.GERMANY).apply
+     timeZone = TimeZone.getTimeZone("UTC")
+ }
+ 
++/** Beziehungstypen, die in der "Kind hinzufügen"-Ansicht zur Auswahl stehen. */
++private val childRelationTypes = listOf(RelationType.DAUGHTER, RelationType.SON)
++
+ @Composable
+ fun AddPersonScreen(
+     existingPerson: Person?,
+     relativeOf: Person? = null,
++    // Wird gesetzt, wenn der Flow bereits eindeutig ist (Mama/Papa/Partner:in
++    // hinzufügen aus dem PersonDetailScreen) - dann entfällt die Chip-Auswahl
++    // komplett. Bleibt null für "Kind hinzufügen", da dort noch
++    // Tochter/Sohn gewählt werden muss.
++    presetRelationType: RelationType? = null,
+     onClose: () -> Unit,
+     onSave: (PersonFormResult) -> Unit,
+     onDelete: (() -> Unit)? = null
+@@ -84,13 +92,14 @@ fun AddPersonScreen(
+     var bio by remember { mutableStateOf(existingPerson?.bio.orEmpty()) }
+     var isDeceased by remember { mutableStateOf(existingPerson?.isDeceased ?: false) }
+     var deathDateText by remember { mutableStateOf(existingPerson?.deathDate.orEmpty()) }
+-    var relationType by remember { mutableStateOf<RelationType?>(null) }
++    var relationType by remember { mutableStateOf(presetRelationType) }
+     var showBirthDatePicker by remember { mutableStateOf(false) }
+     var showDeathDatePicker by remember { mutableStateOf(false) }
+ 
+     val isEditMode = existingPerson != null
+     val isRelativeFlow = !isEditMode && relativeOf != null
+-    val canSave = name.isNotBlank() && (!isRelativeFlow || relationType != null)
++    val needsRelationChoice = isRelativeFlow && presetRelationType == null
++    val canSave = name.isNotBlank() && (!needsRelationChoice || relationType != null)
+ 
+     Column(modifier = Modifier.fillMaxSize()) {
+         Row(
+@@ -111,7 +120,8 @@ fun AddPersonScreen(
+             Text(
+                 when {
+                     isEditMode -> "Person bearbeiten"
+-                    isRelativeFlow -> "Verwandte:n hinzufügen"
++                    presetRelationType != null -> "${presetRelationType.label} hinzufügen"
++                    isRelativeFlow -> "Kind hinzufügen"
+                     else -> "Person hinzufügen"
+                 },
+                 style = MaterialTheme.typography.labelLarge
+@@ -129,7 +139,7 @@ fun AddPersonScreen(
+                         name.isBlank() -> {
+                             Toast.makeText(context, "Bitte einen Namen eingeben", Toast.LENGTH_SHORT).show()
+                         }
+-                        isRelativeFlow && relationType == null -> {
++                        needsRelationChoice && relationType == null -> {
+                             Toast.makeText(context, "Bitte eine Beziehung auswählen", Toast.LENGTH_SHORT).show()
+                         }
+                         else -> {
+@@ -174,7 +184,7 @@ fun AddPersonScreen(
+                 }
+             }
+ 
+-            if (isRelativeFlow && relativeOf != null) {
++            if (needsRelationChoice && relativeOf != null) {
+                 Column {
+                     Text(
+                         "Beziehung zu ${relativeOf.name}",
+@@ -183,7 +193,7 @@ fun AddPersonScreen(
+                     )
+                     Spacer(modifier = Modifier.padding(top = 8.dp))
+                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-                        RelationType.entries.forEach { type ->
++                        childRelationTypes.forEach { type ->
+                             RelationTypeChip(
+                                 label = type.label,
+                                 selected = relationType == type,
+@@ -192,6 +202,12 @@ fun AddPersonScreen(
+                         }
+                     }
+                 }
++            } else if (isRelativeFlow && relativeOf != null && presetRelationType != null) {
++                Text(
++                    "${presetRelationType.label} von ${relativeOf.name}",
++                    style = MaterialTheme.typography.bodyMedium,
++                    color = FamlyTextSecondary
++                )
+             }
+ 
+             FormField(label = "Name", value = name, onValueChange = { name = it }, placeholder = "z. B. Lena Müller")
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
+index f0dc12e..f5243b2 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
+@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
+ import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.ArrowBack
++import androidx.compose.material.icons.filled.ChevronRight
+ import androidx.compose.material.icons.filled.Edit
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.MaterialTheme
+@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
++import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.unit.dp
+ import com.beigel.famly.data.model.Person
+ import com.beigel.famly.ui.components.FamlyAvatar
+@@ -34,16 +36,25 @@ import com.beigel.famly.ui.theme.FamlyBackground
+ import com.beigel.famly.ui.theme.FamlyChipBackground
+ import com.beigel.famly.ui.theme.FamlyChipText
+ import com.beigel.famly.ui.theme.FamlyIconBackground
++import com.beigel.famly.ui.theme.FamlyPetrolPrimary
+ import com.beigel.famly.ui.theme.FamlyStatusAlive
+ import com.beigel.famly.ui.theme.FamlyTextSecondary
+ 
+ @Composable
+ fun PersonDetailScreen(
+     person: Person,
++    mother: Person?,
++    father: Person?,
++    partner: Person?,
++    children: List<Person>,
+     onBack: () -> Unit,
+     onEdit: () -> Unit,
+     onInvite: () -> Unit,
+-    onAddRelative: () -> Unit
++    onOpenPerson: (Person) -> Unit,
++    onAddMother: () -> Unit,
++    onAddFather: () -> Unit,
++    onAddPartner: () -> Unit,
++    onAddChild: () -> Unit
+ ) {
+     Column(
+         modifier = Modifier
+@@ -109,10 +120,116 @@ fun PersonDetailScreen(
+                 FamlySecondaryButton(text = "Einladen", modifier = Modifier.weight(1f), onClick = onInvite)
+             }
+ 
+-            FamlySecondaryButton(
+-                text = "+ Verwandte:n hinzufügen",
+-                modifier = Modifier.fillMaxWidth(),
+-                onClick = onAddRelative
++            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++                Text("Familie", style = MaterialTheme.typography.titleSmall)
++
++                FamlyCard {
++                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
++                        RelativeRow(
++                            label = "Mama",
++                            linkedPerson = mother,
++                            onOpen = { mother?.let(onOpenPerson) },
++                            onAdd = onAddMother
++                        )
++                        RelativeRow(
++                            label = "Papa",
++                            linkedPerson = father,
++                            onOpen = { father?.let(onOpenPerson) },
++                            onAdd = onAddFather
++                        )
++                        RelativeRow(
++                            label = "Partner:in",
++                            linkedPerson = partner,
++                            onOpen = { partner?.let(onOpenPerson) },
++                            onAdd = onAddPartner
++                        )
++                    }
++                }
++
++                FamlyCard {
++                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
++                        Text(
++                            "Kinder",
++                            style = MaterialTheme.typography.bodyMedium,
++                            color = FamlyTextSecondary
++                        )
++                        if (children.isEmpty()) {
++                            Text(
++                                "Noch keine Kinder eingetragen",
++                                style = MaterialTheme.typography.bodySmall,
++                                color = FamlyTextSecondary,
++                                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
++                            )
++                        } else {
++                            children.forEach { child ->
++                                Row(
++                                    modifier = Modifier
++                                        .fillMaxWidth()
++                                        .clickable { onOpenPerson(child) }
++                                        .padding(vertical = 8.dp),
++                                    horizontalArrangement = Arrangement.SpaceBetween,
++                                    verticalAlignment = Alignment.CenterVertically
++                                ) {
++                                    Text(child.name, style = MaterialTheme.typography.bodyMedium)
++                                    Icon(
++                                        imageVector = Icons.Filled.ChevronRight,
++                                        contentDescription = null,
++                                        tint = FamlyTextSecondary,
++                                        modifier = Modifier.size(18.dp)
++                                    )
++                                }
++                            }
++                        }
++                        Text(
++                            "+ Kind hinzufügen",
++                            color = FamlyPetrolPrimary,
++                            style = MaterialTheme.typography.bodyMedium,
++                            fontWeight = FontWeight.Bold,
++                            modifier = Modifier
++                                .fillMaxWidth()
++                                .clickable(onClick = onAddChild)
++                                .padding(vertical = 6.dp)
++                        )
++                    }
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun RelativeRow(
++    label: String,
++    linkedPerson: Person?,
++    onOpen: () -> Unit,
++    onAdd: () -> Unit
++) {
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .clickable(onClick = if (linkedPerson != null) onOpen else onAdd)
++            .padding(vertical = 10.dp),
++        horizontalArrangement = Arrangement.SpaceBetween,
++        verticalAlignment = Alignment.CenterVertically
++    ) {
++        Text(label, style = MaterialTheme.typography.bodyMedium, color = FamlyTextSecondary)
++        if (linkedPerson != null) {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Text(linkedPerson.name, style = MaterialTheme.typography.bodyMedium)
++                Spacer(modifier = Modifier.padding(end = 2.dp))
++                Icon(
++                    imageVector = Icons.Filled.ChevronRight,
++                    contentDescription = null,
++                    tint = FamlyTextSecondary,
++                    modifier = Modifier.size(18.dp)
++                )
++            }
++        } else {
++            Text(
++                "+ hinzufügen",
++                color = FamlyPetrolPrimary,
++                style = MaterialTheme.typography.bodyMedium,
++                fontWeight = FontWeight.Bold
+             )
+         }
+     }
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+index bbbd940..94ed382 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+@@ -104,10 +104,19 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
+     val parentIds = unions.keys.flatten().toSet()
+     val dsu = Dsu()
+     unions.keys.forEach { key -> key.drop(1).forEach { dsu.union(key.first(), it) } }
++    // Partner:innen ohne gemeinsame Kinder (partnerId gesetzt, aber kein
++    // eigener Eintrag in `unions`) trotzdem als Block zusammenfassen, damit
++    // sie im Baum nebeneinander stehen und eine Paar-Linie bekommen.
++    val partnerOnlyPairs = people.mapNotNull { person ->
++        val partnerId = person.partnerId?.takeIf { byId.containsKey(it) } ?: return@mapNotNull null
++        if (person.id < partnerId) person.id to partnerId else null
++    }
++    partnerOnlyPairs.forEach { (a, b) -> dsu.union(a, b) }
+ 
++    val blockParticipantIds = parentIds + partnerOnlyPairs.flatMap { (a, b) -> listOf(a, b) }
+     val blockOf = HashMap<String, String>()
+     ordered.forEach { person ->
+-        blockOf[person.id] = if (person.id in parentIds) "u:${dsu.find(person.id)}" else "p:${person.id}"
++        blockOf[person.id] = if (person.id in blockParticipantIds) "u:${dsu.find(person.id)}" else "p:${person.id}"
+     }
+ 
+     val blockMembers = LinkedHashMap<String, MutableList<Person>>()
+@@ -198,6 +207,17 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
+     // --- 6) Linien ------------------------------------------------------------
+     val nodeById = nodes.associateBy { it.person.id }
+     val links = mutableListOf<TreeLink>()
++    partnerOnlyPairs.forEach { (a, b) ->
++        val first = nodeById[a] ?: return@forEach
++        val second = nodeById[b] ?: return@forEach
++        links += TreeLink(
++            points = listOf(
++                Offset(first.centerX, first.centerY),
++                Offset(second.centerX, second.centerY)
++            ),
++            isPartner = true
++        )
++    }
+     unions.forEach { (parents, children) ->
+         val parentNodes = parents.mapNotNull { nodeById[it] }.sortedBy { it.x }
+         val childNodes = children.mapNotNull { nodeById[it] }.sortedBy { it.x }
+-- 
+2.43.0
+
+
+From 7a7d8e5e34cf02996c308e935fc080a4a6fc998e Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 20:51:16 +0000
+Subject: [PATCH 2/3] PersonDetailScreen: Bearbeiten-Button entfernt, Einladen
+ ans Ende verschoben
+
+- Bearbeiten ist weiterhin ueber das Stift-Icon oben erreichbar, der
+  redundante grosse Bearbeiten-Button ist raus
+- Einladen steht jetzt ganz unten unter der Familie/Kinder-Sektion und
+  wird nur noch bei anderen Personen angezeigt, nicht bei 'Ich' selbst
+---
+ .../com/beigel/famly/ui/navigation/FamlyNavHost.kt    |  1 +
+ .../ui/screens/persondetail/PersonDetailScreen.kt     | 11 +++++------
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index ad048fd..222ed81 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -219,6 +219,7 @@ fun FamlyNavHost(
+                         father = father,
+                         partner = partner,
+                         children = children,
++                        canInvite = person.id != SELF_PERSON_ID,
+                         onBack = { navController.popBackStack() },
+                         onEdit = { navController.navigate(FamlyRoutes.addPerson(personId = person.id)) },
+                         onInvite = { navController.navigate(FamlyRoutes.INVITE) },
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
+index f5243b2..f23ade1 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/persondetail/PersonDetailScreen.kt
+@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.dp
+ import com.beigel.famly.data.model.Person
+ import com.beigel.famly.ui.components.FamlyAvatar
+ import com.beigel.famly.ui.components.FamlyCard
+-import com.beigel.famly.ui.components.FamlyPrimaryButton
+ import com.beigel.famly.ui.components.FamlySecondaryButton
+ import com.beigel.famly.ui.theme.FamlyBackground
+ import com.beigel.famly.ui.theme.FamlyChipBackground
+@@ -47,6 +46,7 @@ fun PersonDetailScreen(
+     father: Person?,
+     partner: Person?,
+     children: List<Person>,
++    canInvite: Boolean,
+     onBack: () -> Unit,
+     onEdit: () -> Unit,
+     onInvite: () -> Unit,
+@@ -115,11 +115,6 @@ fun PersonDetailScreen(
+                 Text(person.bio, style = MaterialTheme.typography.bodyMedium, color = FamlyTextSecondary)
+             }
+ 
+-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+-                FamlyPrimaryButton(text = "Bearbeiten", modifier = Modifier.weight(1f), onClick = onEdit)
+-                FamlySecondaryButton(text = "Einladen", modifier = Modifier.weight(1f), onClick = onInvite)
+-            }
+-
+             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                 Text("Familie", style = MaterialTheme.typography.titleSmall)
+ 
+@@ -193,6 +188,10 @@ fun PersonDetailScreen(
+                     }
+                 }
+             }
++
++            if (canInvite) {
++                FamlySecondaryButton(text = "Einladen", modifier = Modifier.fillMaxWidth(), onClick = onInvite)
++            }
+         }
+     }
+ }
+-- 
+2.43.0
+
+
+From 9cf59320b101b4200f0fd29cc7d5430f6967e70a Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 21:02:39 +0000
+Subject: [PATCH 3/3] Debug-Logging fuer den Speichern-Flow (add/update Person)
+
+- Logcat-Tags 'FamlyNavHost' und 'FirestoreFamilyRepo' zeigen jetzt bei
+  jedem Speichern-Tap: ob onSave ueberhaupt ankommt, ob addPerson/
+  updatePerson erfolgreich sind oder mit welchem Fehler sie
+  fehlschlagen, und ob die Navigation zum Baum tatsaechlich abgeschickt
+  wird. Hilft, den 'Frame schliesst sich nicht'-Fall einzugrenzen.
+---
+ .../repository/FirestoreFamilyRepository.kt   |  6 ++++++
+ .../famly/ui/navigation/FamlyNavHost.kt       | 20 +++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt b/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
+index b31a351..4774cba 100644
+--- a/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
++++ b/app/src/main/java/com/beigel/famly/data/repository/FirestoreFamilyRepository.kt
+@@ -1,5 +1,6 @@
+ package com.beigel.famly.data.repository
+ 
++import android.util.Log
+ import com.beigel.famly.data.auth.AuthRepository
+ import com.beigel.famly.data.model.AvatarAccent
+ import com.beigel.famly.data.model.FamilyTree
+@@ -26,6 +27,7 @@ private const val COLLECTION_PERSONS = "persons"
+ private const val SELF_PERSON_ID = "ich"
+ private const val FIELD_FAMILY_ID = "familyId"
+ private const val FIELD_INVITE_CODE = "inviteCode"
++private const val TAG = "FirestoreFamilyRepo"
+ 
+ /**
+  * Firestore-Datenmodell:
+@@ -349,6 +351,7 @@ class FirestoreFamilyRepository(
+         val familyPersonsRef = firestore.collection(COLLECTION_FAMILIES).document(familyId)
+             .collection(COLLECTION_PERSONS)
+ 
++        Log.d(TAG, "addPerson: starte Batch-Commit für neue Person $id (relationType=$relationType, relativeOf=${relativeOf.id})")
+         firestore.runBatch { batch ->
+             batch.set(familyPersonsRef.document(id), person.toFirestoreMap())
+             when {
+@@ -366,8 +369,11 @@ class FirestoreFamilyRepository(
+                 }
+             }
+         }.await()
++        Log.d(TAG, "addPerson: Batch-Commit für $id erfolgreich abgeschlossen")
+ 
+         person
++    }.also { result ->
++        result.onFailure { error -> Log.e(TAG, "addPerson fehlgeschlagen", error) }
+     }
+ 
+     override suspend fun updatePerson(
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index 222ed81..19bf544 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -1,5 +1,6 @@
+ package com.beigel.famly.ui.navigation
+ 
++import android.util.Log
+ import android.widget.Toast
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.runtime.Composable
+@@ -63,6 +64,7 @@ object FamlyRoutes {
+ 
+ private val bottomBarRoutes = FamlyBottomDestination.entries.map { it.route }.toSet()
+ private const val SELF_PERSON_ID = "ich"
++private const val TAG = "FamlyNavHost"
+ 
+ @Composable
+ fun FamlyNavHost(
+@@ -114,12 +116,14 @@ fun FamlyNavHost(
+     // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
+     // danach nicht mehr zuverlässig.
+     fun goToTreeFocusedOn(personId: String) {
++        Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
+         pendingFocusPersonId = personId
+         navController.navigate(FamlyRoutes.tree()) {
+             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+             launchSingleTop = true
+             restoreState = true
+         }
++        Log.d(TAG, "navController.navigate(tree) abgeschickt")
+     }
+ 
+     Scaffold(
+@@ -270,10 +274,12 @@ fun FamlyNavHost(
+                     onSave = { result ->
+                         // Doppel-Tap auf "Speichern" wuerde sonst zwei Personen
+                         // anlegen - der Firestore-Aufruf ist asynchron.
++                        Log.d(TAG, "onSave getriggert, isSaving=$isSaving, existingPerson=${existingPerson?.id}, relativeOf=${relativeOfPerson?.id}, relationType=${result.relationType}")
+                         if (!isSaving) {
+                             isSaving = true
+                             coroutineScope.launch {
+                                 if (existingPerson != null) {
++                                    Log.d(TAG, "updatePerson(${existingPerson.id}) wird aufgerufen")
+                                     familyRepository.updatePerson(
+                                         id = existingPerson.id,
+                                         name = result.name,
+@@ -283,8 +289,10 @@ fun FamlyNavHost(
+                                         deathDate = result.deathDate,
+                                         bio = result.bio
+                                     ).onSuccess {
++                                        Log.d(TAG, "updatePerson erfolgreich, navigiere zum Baum")
+                                         goToTreeFocusedOn(existingPerson.id)
+                                     }.onFailure { error ->
++                                        Log.e(TAG, "updatePerson fehlgeschlagen", error)
+                                         Toast.makeText(
+                                             context,
+                                             "Speichern fehlgeschlagen: ${error.message}",
+@@ -292,6 +300,7 @@ fun FamlyNavHost(
+                                         ).show()
+                                     }
+                                 } else if (relativeOfPerson != null && result.relationType != null) {
++                                    Log.d(TAG, "addPerson(relativeOf=${relativeOfPerson.id}, relationType=${result.relationType}) wird aufgerufen")
+                                     familyRepository.addPerson(
+                                         name = result.name,
+                                         birthDate = result.birthDate,
+@@ -302,14 +311,25 @@ fun FamlyNavHost(
+                                         relativeOfId = relativeOfPerson.id,
+                                         relationType = result.relationType
+                                     ).onSuccess { newPerson ->
++                                        Log.d(TAG, "addPerson erfolgreich, neue Person=${newPerson.id}, navigiere zum Baum")
+                                         goToTreeFocusedOn(newPerson.id)
+                                     }.onFailure { error ->
++                                        Log.e(TAG, "addPerson fehlgeschlagen", error)
+                                         Toast.makeText(
+                                             context,
+                                             "Speichern fehlgeschlagen: ${error.message}",
+                                             Toast.LENGTH_LONG
+                                         ).show()
+                                     }
++                                } else {
++                                    // Sollte über die Buttons nie erreichbar sein, aber
++                                    // falls doch: sichtbar machen statt still zu verpuffen.
++                                    Log.w(TAG, "onSave: weder existingPerson noch (relativeOf+relationType) gesetzt - nichts gespeichert")
++                                    Toast.makeText(
++                                        context,
++                                        "Konnte nicht speichern: fehlende Zuordnung",
++                                        Toast.LENGTH_LONG
++                                    ).show()
+                                 }
+                                 isSaving = false
+                             }
+-- 
+2.43.0
+

@@ -77,8 +77,30 @@ class FakeFamilyRepository : FamilyRepository {
         val treePosition = TreePosition(targetGeneration, (usedSlots.maxOrNull() ?: -1) + 1)
         val relation = inferRelationToSelf(relativeOf.relation, relationType)
 
+        val newPersonIsParent = relationType.generationOffset < 0
+        val isPartnerRelation = relationType == RelationType.PARTNER
+        val partnerOfRelativeOf = relativeOf.partnerId?.let { pid -> members.find { it.id == pid } }
+
+        val newPersonParentIds = when {
+            isPartnerRelation || newPersonIsParent -> emptyList()
+            else -> listOfNotNull(relativeOf.id, partnerOfRelativeOf?.id).distinct()
+        }
+
+        var newPersonMotherId: String? = null
+        var newPersonFatherId: String? = null
+        if (!newPersonIsParent && !isPartnerRelation) {
+            listOfNotNull(relativeOf, partnerOfRelativeOf).forEach { parent ->
+                when (parent.isFemale) {
+                    true -> newPersonMotherId = newPersonMotherId ?: parent.id
+                    false -> newPersonFatherId = newPersonFatherId ?: parent.id
+                    null -> Unit
+                }
+            }
+        }
+
+        val id = UUID.randomUUID().toString()
         val person = Person(
-            id = UUID.randomUUID().toString(),
+            id = id,
             name = name,
             initial = name.trim().firstOrNull()?.uppercase() ?: "?",
             relation = relation,
@@ -89,9 +111,27 @@ class FakeFamilyRepository : FamilyRepository {
             deathDate = deathDate,
             bio = bio,
             connections = listOf(relativeOf.name),
+            parentIds = newPersonParentIds,
+            motherId = newPersonMotherId,
+            fatherId = newPersonFatherId,
+            partnerId = if (isPartnerRelation) relativeOf.id else null,
+            isFemale = relationType.isFemale,
             treePosition = treePosition
         )
-        _familyTree.update { it.copy(members = it.members + person, memberCount = it.members.size + 1) }
+        _familyTree.update { tree ->
+            val updatedMembers = tree.members.map { existing ->
+                when {
+                    newPersonIsParent && existing.id == relativeOf.id -> existing.copy(
+                        parentIds = existing.parentIds + id,
+                        motherId = if (relationType == RelationType.MOTHER) id else existing.motherId,
+                        fatherId = if (relationType == RelationType.FATHER) id else existing.fatherId
+                    )
+                    isPartnerRelation && existing.id == relativeOf.id -> existing.copy(partnerId = id)
+                    else -> existing
+                }
+            }
+            tree.copy(members = updatedMembers + person, memberCount = updatedMembers.size + 1)
+        }
         person
     }
 
@@ -119,8 +159,11 @@ class FakeFamilyRepository : FamilyRepository {
     }
 
     private fun inferRelationToSelf(baseRelation: String, type: RelationType): String {
+        if (type == RelationType.PARTNER) {
+            return if (baseRelation == "Ich") "Partner:in" else "Partner:in von $baseRelation"
+        }
         val addsParent = type.generationOffset < 0
-        fun pick(female: String, male: String) = if (type.isFemale) female else male
+        fun pick(female: String, male: String) = if (type.isFemale == true) female else male
 
         return when (baseRelation) {
             "Ich" -> if (addsParent) pick("Mutter", "Vater") else pick("Tochter", "Sohn")

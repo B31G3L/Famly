@@ -26,6 +26,25 @@ data class Person(
     val bio: String = "",
     val connections: List<String> = emptyList(),
     val parentIds: List<String> = emptyList(),
+    /**
+     * Direkte Referenzen auf Mama/Papa/Partner:in, zusätzlich zum generischen
+     * [parentIds] (das weiterhin die "Wahrheit" fürs Baum-Layout ist). Diese
+     * drei Felder dienen nur der Anzeige im PersonDetailScreen ("Mama",
+     * "Papa", "Partner:in" als eigene Zeilen statt eines generischen
+     * "Verwandte hinzufügen"). Bleiben null für Altbestand oder wenn die
+     * Zuordnung nicht eindeutig bekannt ist (siehe [FamlyNavHost]-Fallback).
+     */
+    val motherId: String? = null,
+    val fatherId: String? = null,
+    val partnerId: String? = null,
+    /**
+     * Bekanntes Geschlecht, sofern beim Anlegen über einen geschlechtsspezifischen
+     * [RelationType] (Mama/Papa/Tochter/Sohn) ableitbar. Wird u. a. genutzt, um
+     * beim Hinzufügen eines Kindes automatisch motherId/fatherId auf der neuen
+     * Person zu setzen. Bleibt null für "Ich" und für Partner:innen ohne
+     * angegebenes Geschlecht.
+     */
+    val isFemale: Boolean? = null,
     val treePosition: TreePosition? = null,
     /**
      * UID des verknüpften Firebase-Accounts, falls diese Person tatsächlich
@@ -71,9 +90,10 @@ enum class MemberStatus {
  * zu "Ich" - die automatisch ermittelte Bezeichnung (siehe
  * [FamilyRepository]/[FirestoreFamilyRepository]).
  */
-enum class RelationType(val label: String, val generationOffset: Int, val isFemale: Boolean) {
+enum class RelationType(val label: String, val generationOffset: Int, val isFemale: Boolean?) {
     MOTHER("Mama", -1, true),
     FATHER("Papa", -1, false),
+    PARTNER("Partner:in", 0, null),
     DAUGHTER("Tochter", +1, true),
     SON("Sohn", +1, false)
 }

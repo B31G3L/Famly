@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,26 +25,36 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.ui.components.FamlyAvatar
 import com.beigel.famly.ui.components.FamlyCard
-import com.beigel.famly.ui.components.FamlyPrimaryButton
 import com.beigel.famly.ui.components.FamlySecondaryButton
 import com.beigel.famly.ui.theme.FamlyBackground
 import com.beigel.famly.ui.theme.FamlyChipBackground
 import com.beigel.famly.ui.theme.FamlyChipText
 import com.beigel.famly.ui.theme.FamlyIconBackground
+import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyStatusAlive
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 
 @Composable
 fun PersonDetailScreen(
     person: Person,
+    mother: Person?,
+    father: Person?,
+    partner: Person?,
+    children: List<Person>,
+    canInvite: Boolean,
     onBack: () -> Unit,
     onEdit: () -> Unit,
     onInvite: () -> Unit,
-    onAddRelative: () -> Unit
+    onOpenPerson: (Person) -> Unit,
+    onAddMother: () -> Unit,
+    onAddFather: () -> Unit,
+    onAddPartner: () -> Unit,
+    onAddChild: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -104,15 +115,120 @@ fun PersonDetailScreen(
                 Text(person.bio, style = MaterialTheme.typography.bodyMedium, color = FamlyTextSecondary)
             }
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FamlyPrimaryButton(text = "Bearbeiten", modifier = Modifier.weight(1f), onClick = onEdit)
-                FamlySecondaryButton(text = "Einladen", modifier = Modifier.weight(1f), onClick = onInvite)
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Familie", style = MaterialTheme.typography.titleSmall)
+
+                FamlyCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        RelativeRow(
+                            label = "Mama",
+                            linkedPerson = mother,
+                            onOpen = { mother?.let(onOpenPerson) },
+                            onAdd = onAddMother
+                        )
+                        RelativeRow(
+                            label = "Papa",
+                            linkedPerson = father,
+                            onOpen = { father?.let(onOpenPerson) },
+                            onAdd = onAddFather
+                        )
+                        RelativeRow(
+                            label = "Partner:in",
+                            linkedPerson = partner,
+                            onOpen = { partner?.let(onOpenPerson) },
+                            onAdd = onAddPartner
+                        )
+                    }
+                }
+
+                FamlyCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Kinder",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = FamlyTextSecondary
+                        )
+                        if (children.isEmpty()) {
+                            Text(
+                                "Noch keine Kinder eingetragen",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = FamlyTextSecondary,
+                                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
+                            )
+                        } else {
+                            children.forEach { child ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onOpenPerson(child) }
+                                        .padding(vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(child.name, style = MaterialTheme.typography.bodyMedium)
+                                    Icon(
+                                        imageVector = Icons.Filled.ChevronRight,
+                                        contentDescription = null,
+                                        tint = FamlyTextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "+ Kind hinzufügen",
+                            color = FamlyPetrolPrimary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = onAddChild)
+                                .padding(vertical = 6.dp)
+                        )
+                    }
+                }
             }
 
-            FamlySecondaryButton(
-                text = "+ Verwandte:n hinzufügen",
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onAddRelative
+            if (canInvite) {
+                FamlySecondaryButton(text = "Einladen", modifier = Modifier.fillMaxWidth(), onClick = onInvite)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelativeRow(
+    label: String,
+    linkedPerson: Person?,
+    onOpen: () -> Unit,
+    onAdd: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = if (linkedPerson != null) onOpen else onAdd)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = FamlyTextSecondary)
+        if (linkedPerson != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(linkedPerson.name, style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.padding(end = 2.dp))
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = FamlyTextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        } else {
+            Text(
+                "+ hinzufügen",
+                color = FamlyPetrolPrimary,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
             )
         }
     }
