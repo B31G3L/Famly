@@ -4,6 +4,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +76,9 @@ fun FamlyNavHost(
 ) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    LaunchedEffect(currentRoute) {
+        Log.d(TAG, "UI zeigt jetzt Route: $currentRoute")
+    }
     val coroutineScope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -111,19 +115,24 @@ fun FamlyNavHost(
     // Verhindert doppeltes Speichern bei schnellem Doppel-Tap auf "Speichern".
     var isSaving by remember { mutableStateOf(false) }
 
-    // WICHTIG: dasselbe saveState/restoreState-Muster wie die Bottom-Bar
-    // weiter unten verwenden - sonst gerät der interne Back-Stack der
-    // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
-    // danach nicht mehr zuverlässig.
+    // War vorher als popUpTo(DASHBOARD){saveState=true} + restoreState=true
+    // gebaut (analog zur Bottom-Bar), hat sich aber als kompletter No-Op
+    // erwiesen: navigate() lief durch, ohne den Back-Stack überhaupt zu
+    // verändern (siehe Debug-Logs). Stattdessen jetzt zwei unabhängige,
+    // simple Schritte: erst zurückpoppen bis (aber ohne) Dashboard, dann
+    // ganz normal zu Tree navigieren.
     fun goToTreeFocusedOn(personId: String) {
         Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
+        Log.d(TAG, "Back-Stack VOR popBackStack: ${navController.currentBackStack.value.map { it.destination.route }}")
         pendingFocusPersonId = personId
+        val popped = navController.popBackStack(FamlyRoutes.DASHBOARD, false)
+        Log.d(TAG, "popBackStack(DASHBOARD) Ergebnis=$popped, Back-Stack danach: ${navController.currentBackStack.value.map { it.destination.route }}")
         navController.navigate(FamlyRoutes.tree()) {
-            popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
             launchSingleTop = true
-            restoreState = true
         }
         Log.d(TAG, "navController.navigate(tree) abgeschickt")
+        Log.d(TAG, "Back-Stack NACH navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
+        Log.d(TAG, "currentDestination NACH navigate: ${navController.currentDestination?.route}")
     }
 
     Scaffold(

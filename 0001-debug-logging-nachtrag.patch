@@ -1,0 +1,54 @@
+From 3220d94cbb0e8a8f456f4550d62ae22f5eb2f97e Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 21:27:37 +0000
+Subject: [PATCH] Back-Stack-Logging fuer den Tree-Navigation-Bug nachtragen
+
+- LaunchedEffect loggt jede tatsaechlich von der UI gerenderte Route
+- goToTreeFocusedOn loggt Back-Stack vor/nach dem navigate(tree)-Aufruf
+  sowie currentDestination danach
+---
+ .../java/com/beigel/famly/ui/navigation/FamlyNavHost.kt    | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index 19bf544..e9929ba 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -4,6 +4,7 @@ import android.util.Log
+ import android.widget.Toast
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.mutableStateOf
+@@ -75,6 +76,9 @@ fun FamlyNavHost(
+ ) {
+     val backStackEntry by navController.currentBackStackEntryAsState()
+     val currentRoute = backStackEntry?.destination?.route
++    LaunchedEffect(currentRoute) {
++        Log.d(TAG, "UI zeigt jetzt Route: $currentRoute")
++    }
+     val coroutineScope = rememberCoroutineScope()
+     val clipboardManager = LocalClipboardManager.current
+     val context = LocalContext.current
+@@ -117,6 +121,7 @@ fun FamlyNavHost(
+     // danach nicht mehr zuverlässig.
+     fun goToTreeFocusedOn(personId: String) {
+         Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
++        Log.d(TAG, "Back-Stack VOR navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
+         pendingFocusPersonId = personId
+         navController.navigate(FamlyRoutes.tree()) {
+             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+@@ -124,6 +129,8 @@ fun FamlyNavHost(
+             restoreState = true
+         }
+         Log.d(TAG, "navController.navigate(tree) abgeschickt")
++        Log.d(TAG, "Back-Stack NACH navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
++        Log.d(TAG, "currentDestination NACH navigate: ${navController.currentDestination?.route}")
+     }
+ 
+     Scaffold(
+-- 
+2.43.0
+

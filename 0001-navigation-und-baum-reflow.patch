@@ -1,0 +1,203 @@
+From 3220d94cbb0e8a8f456f4550d62ae22f5eb2f97e Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 21:27:37 +0000
+Subject: [PATCH 1/3] Back-Stack-Logging fuer den Tree-Navigation-Bug
+ nachtragen
+
+- LaunchedEffect loggt jede tatsaechlich von der UI gerenderte Route
+- goToTreeFocusedOn loggt Back-Stack vor/nach dem navigate(tree)-Aufruf
+  sowie currentDestination danach
+---
+ .../java/com/beigel/famly/ui/navigation/FamlyNavHost.kt    | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index 19bf544..e9929ba 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -4,6 +4,7 @@ import android.util.Log
+ import android.widget.Toast
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.mutableStateOf
+@@ -75,6 +76,9 @@ fun FamlyNavHost(
+ ) {
+     val backStackEntry by navController.currentBackStackEntryAsState()
+     val currentRoute = backStackEntry?.destination?.route
++    LaunchedEffect(currentRoute) {
++        Log.d(TAG, "UI zeigt jetzt Route: $currentRoute")
++    }
+     val coroutineScope = rememberCoroutineScope()
+     val clipboardManager = LocalClipboardManager.current
+     val context = LocalContext.current
+@@ -117,6 +121,7 @@ fun FamlyNavHost(
+     // danach nicht mehr zuverlässig.
+     fun goToTreeFocusedOn(personId: String) {
+         Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
++        Log.d(TAG, "Back-Stack VOR navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
+         pendingFocusPersonId = personId
+         navController.navigate(FamlyRoutes.tree()) {
+             popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+@@ -124,6 +129,8 @@ fun FamlyNavHost(
+             restoreState = true
+         }
+         Log.d(TAG, "navController.navigate(tree) abgeschickt")
++        Log.d(TAG, "Back-Stack NACH navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
++        Log.d(TAG, "currentDestination NACH navigate: ${navController.currentDestination?.route}")
+     }
+ 
+     Scaffold(
+-- 
+2.43.0
+
+
+From 76bd9d83f8556fa78e2c9ffb9070e80bc64a2ff4 Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 21:34:25 +0000
+Subject: [PATCH 2/3] goToTreeFocusedOn: popUpTo/restoreState-Kombi war ein
+ No-Op, durch simplen popBackStack+navigate ersetzt
+
+Debug-Logs zeigten: navController.navigate(tree){ popUpTo(DASHBOARD)
+{saveState=true}; restoreState=true } lief ohne Fehler durch, hat den
+Back-Stack aber ueberhaupt nicht veraendert - Ursache dafuer bleibt
+unklar, vermutlich ein Navigation-Compose-Eigenheit im Zusammenspiel
+mit der Bottom-Bar-Navigation, die dasselbe Muster verwendet.
+
+Ersetzt durch zwei unabhaengige Schritte: navController.popBackStack(
+DASHBOARD, false) raeumt PersonDetail/AddPerson vom Stack, danach ein
+ganz normales navigate(tree()) ohne popUpTo/restoreState. Debug-Logs
+bleiben vorerst drin, um das naechste Mal zu verifizieren.
+---
+ .../beigel/famly/ui/navigation/FamlyNavHost.kt   | 16 +++++++++-------
+ 1 file changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index e9929ba..a31c85a 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -115,18 +115,20 @@ fun FamlyNavHost(
+     // Verhindert doppeltes Speichern bei schnellem Doppel-Tap auf "Speichern".
+     var isSaving by remember { mutableStateOf(false) }
+ 
+-    // WICHTIG: dasselbe saveState/restoreState-Muster wie die Bottom-Bar
+-    // weiter unten verwenden - sonst gerät der interne Back-Stack der
+-    // Navigation durcheinander und Tab-Wechsel über die Bottom-Bar reagieren
+-    // danach nicht mehr zuverlässig.
++    // War vorher als popUpTo(DASHBOARD){saveState=true} + restoreState=true
++    // gebaut (analog zur Bottom-Bar), hat sich aber als kompletter No-Op
++    // erwiesen: navigate() lief durch, ohne den Back-Stack überhaupt zu
++    // verändern (siehe Debug-Logs). Stattdessen jetzt zwei unabhängige,
++    // simple Schritte: erst zurückpoppen bis (aber ohne) Dashboard, dann
++    // ganz normal zu Tree navigieren.
+     fun goToTreeFocusedOn(personId: String) {
+         Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
+-        Log.d(TAG, "Back-Stack VOR navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
++        Log.d(TAG, "Back-Stack VOR popBackStack: ${navController.currentBackStack.value.map { it.destination.route }}")
+         pendingFocusPersonId = personId
++        val popped = navController.popBackStack(FamlyRoutes.DASHBOARD, false)
++        Log.d(TAG, "popBackStack(DASHBOARD) Ergebnis=$popped, Back-Stack danach: ${navController.currentBackStack.value.map { it.destination.route }}")
+         navController.navigate(FamlyRoutes.tree()) {
+-            popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+             launchSingleTop = true
+-            restoreState = true
+         }
+         Log.d(TAG, "navController.navigate(tree) abgeschickt")
+         Log.d(TAG, "Back-Stack NACH navigate: ${navController.currentBackStack.value.map { it.destination.route }}")
+-- 
+2.43.0
+
+
+From 1df4a8ddd1d41ab3a6df92dbc8f4f4e168eff4bf Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 21:49:07 +0000
+Subject: [PATCH 3/3] Baumkarten animiert umsortieren statt hart zu springen
+
+- Baum-Layout wird ohnehin schon bei jeder Aenderung der Mitgliederliste
+  komplett neu berechnet (remember(members) in TreeScreen), das war
+  also schon 'frisch gebaut'
+- Neu: jede Karte behaelt ueber key(person.id) ihre Compose-Identitaet
+  und bekommt ihre x/y-Position ueber animateDpAsState statt statisch -
+  wenn eine neue Person den Baum umsortiert (z.B. neues Geschwisterkind
+  verschiebt die anderen), gleiten bestehende Karten sanft zur neuen
+  Position statt hart zu springen
+- Verbindungslinien animieren noch nicht mit, springen weiterhin sofort
+  auf die neue Position (Nachbesserung waere deutlich aufwendiger)
+---
+ .../famly/ui/screens/tree/TreeScreen.kt       | 37 +++++++++++++++----
+ 1 file changed, 29 insertions(+), 8 deletions(-)
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+index 3d2a5dd..219c2c6 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+@@ -2,6 +2,7 @@ package com.beigel.famly.ui.screens.tree
+ 
+ import androidx.compose.animation.core.Animatable
+ import androidx.compose.animation.core.FastOutSlowInEasing
++import androidx.compose.animation.core.animateDpAsState
+ import androidx.compose.animation.core.tween
+ import androidx.compose.foundation.Canvas
+ import androidx.compose.foundation.background
+@@ -28,6 +29,7 @@ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
++import androidx.compose.runtime.key
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.rememberCoroutineScope
+@@ -70,6 +72,7 @@ private const val MIN_SCALE = 0.25f
+ private const val MAX_SCALE = 1.6f
+ private const val FOCUS_SCALE = 0.9f
+ private const val FOCUS_ANIMATION_MS = 480
++private const val REFLOW_ANIMATION_MS = 420
+ 
+ /**
+  * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch).
+@@ -262,14 +265,32 @@ fun TreeScreen(
+                         }
+ 
+                         layout.nodes.forEach { node ->
+-                            TreeCard(
+-                                person = node.person,
+-                                accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
+-                                onClick = { onPersonClick(node.person) },
+-                                highlighted = node.person.id == focusPersonId,
+-                                isSelf = node.person.id == selfPersonId,
+-                                modifier = Modifier.offset(x = node.x.dp, y = node.y.dp)
+-                            )
++                            // key() haelt die Composable-Identitaet ueber
++                            // Person.id fest, statt ueber die Iterationsreihenfolge -
++                            // sonst wuerde animateDpAsState bei jeder
++                            // Baum-Umsortierung faelschlich von vorne anfangen
++                            // (oder die falsche Karte animieren), weil Compose
++                            // sie sonst nur positionell wiederverwendet.
++                            key(node.person.id) {
++                                val animatedX by animateDpAsState(
++                                    targetValue = node.x.dp,
++                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
++                                    label = "treeCardX"
++                                )
++                                val animatedY by animateDpAsState(
++                                    targetValue = node.y.dp,
++                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
++                                    label = "treeCardY"
++                                )
++                                TreeCard(
++                                    person = node.person,
++                                    accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
++                                    onClick = { onPersonClick(node.person) },
++                                    highlighted = node.person.id == focusPersonId,
++                                    isSelf = node.person.id == selfPersonId,
++                                    modifier = Modifier.offset(x = animatedX, y = animatedY)
++                                )
++                            }
+                         }
+                     }
+                 }
+-- 
+2.43.0
+

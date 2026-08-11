@@ -2,6 +2,7 @@ package com.beigel.famly.ui.screens.tree
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -28,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -70,6 +72,7 @@ private const val MIN_SCALE = 0.25f
 private const val MAX_SCALE = 1.6f
 private const val FOCUS_SCALE = 0.9f
 private const val FOCUS_ANIMATION_MS = 480
+private const val REFLOW_ANIMATION_MS = 420
 
 /**
  * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch).
@@ -262,14 +265,32 @@ fun TreeScreen(
                         }
 
                         layout.nodes.forEach { node ->
-                            TreeCard(
-                                person = node.person,
-                                accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
-                                onClick = { onPersonClick(node.person) },
-                                highlighted = node.person.id == focusPersonId,
-                                isSelf = node.person.id == selfPersonId,
-                                modifier = Modifier.offset(x = node.x.dp, y = node.y.dp)
-                            )
+                            // key() haelt die Composable-Identitaet ueber
+                            // Person.id fest, statt ueber die Iterationsreihenfolge -
+                            // sonst wuerde animateDpAsState bei jeder
+                            // Baum-Umsortierung faelschlich von vorne anfangen
+                            // (oder die falsche Karte animieren), weil Compose
+                            // sie sonst nur positionell wiederverwendet.
+                            key(node.person.id) {
+                                val animatedX by animateDpAsState(
+                                    targetValue = node.x.dp,
+                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
+                                    label = "treeCardX"
+                                )
+                                val animatedY by animateDpAsState(
+                                    targetValue = node.y.dp,
+                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
+                                    label = "treeCardY"
+                                )
+                                TreeCard(
+                                    person = node.person,
+                                    accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
+                                    onClick = { onPersonClick(node.person) },
+                                    highlighted = node.person.id == focusPersonId,
+                                    isSelf = node.person.id == selfPersonId,
+                                    modifier = Modifier.offset(x = animatedX, y = animatedY)
+                                )
+                            }
                         }
                     }
                 }
