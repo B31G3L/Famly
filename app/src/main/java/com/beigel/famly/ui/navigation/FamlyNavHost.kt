@@ -72,6 +72,8 @@ fun FamlyNavHost(
     familyRepository: FamilyRepository,
     authRepository: AuthRepository,
     onSignInWithGoogle: () -> Unit,
+    startDestination: String = FamlyRoutes.ONBOARDING,
+    onOnboardingCompleted: () -> Unit = {},
     navController: NavHostController = rememberNavController()
 ) {
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -163,12 +165,16 @@ fun FamlyNavHost(
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = FamlyRoutes.ONBOARDING,
+            startDestination = startDestination,
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(FamlyRoutes.ONBOARDING) {
                 OnboardingScreen(
                     onGetStarted = {
+                        // Persistiert (siehe MainActivity), damit das
+                        // Onboarding nur beim allerersten Start gezeigt wird,
+                        // nicht bei jedem App-Start erneut.
+                        onOnboardingCompleted()
                         navController.navigate(FamlyRoutes.DASHBOARD) {
                             popUpTo(FamlyRoutes.ONBOARDING) { inclusive = true }
                         }

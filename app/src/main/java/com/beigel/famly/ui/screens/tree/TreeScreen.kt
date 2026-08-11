@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Icon
@@ -161,6 +162,30 @@ fun TreeScreen(
                     }
                 }
 
+                /**
+                 * Skalierung, bei der der GESAMTE Baum in den Viewport passt.
+                 * Wird für die allererste Ansicht verwendet, damit ein großer
+                 * Baum nicht schon beim Öffnen nur in einem winzigen
+                 * Ausschnitt zu sehen ist - man bekommt erst die Übersicht,
+                 * kann dann gezielt reinzoomen.
+                 */
+                fun fitAllScale(): Float =
+                    min(viewportWidth / contentWidth, viewportHeight / contentHeight)
+                        .coerceIn(MIN_SCALE, MAX_SCALE)
+
+                /** Animiert zur Übersichtsansicht, bei der der komplette Baum sichtbar ist. */
+                fun goToFitAll() {
+                    val target = fitAllScale()
+                    val targetX = (viewportWidth - contentWidth * target) / 2f
+                    val targetY = (viewportHeight - contentHeight * target) / 2f
+                    scope.launch {
+                        val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
+                        launch { scale.animateTo(target, spec) }
+                        launch { offsetX.animateTo(targetX, spec) }
+                        launch { offsetY.animateTo(targetY, spec) }
+                    }
+                }
+
                 LaunchedEffect(focusPersonId, layout, viewportWidth, viewportHeight) {
                     if (layout.nodes.isEmpty() || viewportWidth <= 0f || viewportHeight <= 0f) {
                         return@LaunchedEffect
@@ -193,19 +218,20 @@ fun TreeScreen(
                     // nachliefert, läuft dieser Effekt erneut und fährt hin.
                     if (hasSettled) return@LaunchedEffect
                     val self = layout.nodes.find { it.person.id == selfPersonId }
+                    // min(FOCUS_SCALE, fitAllScale()): bei einem kleinen Baum
+                    // ganz normal auf FOCUS_SCALE zentriert auf "Ich", bei
+                    // einem grossen Baum stattdessen so weit rausgezoomt,
+                    // dass alles auf einen Blick sichtbar ist.
+                    val initialScale = min(FOCUS_SCALE, fitAllScale())
                     if (self != null) {
-                        val destination = offsetCenteredOn(self, FOCUS_SCALE)
-                        scale.snapTo(FOCUS_SCALE)
+                        val destination = offsetCenteredOn(self, initialScale)
+                        scale.snapTo(initialScale)
                         offsetX.snapTo(destination.x)
                         offsetY.snapTo(destination.y)
                     } else {
-                        val fitted = min(
-                            viewportWidth / contentWidth,
-                            viewportHeight / contentHeight
-                        ).coerceIn(MIN_SCALE, 1f)
-                        scale.snapTo(fitted)
-                        offsetX.snapTo((viewportWidth - contentWidth * fitted) / 2f)
-                        offsetY.snapTo((viewportHeight - contentHeight * fitted) / 2f)
+                        scale.snapTo(initialScale)
+                        offsetX.snapTo((viewportWidth - contentWidth * initialScale) / 2f)
+                        offsetY.snapTo((viewportHeight - contentHeight * initialScale) / 2f)
                     }
                     hasSettled = true
                 }
@@ -322,6 +348,11 @@ fun TreeScreen(
                                 animate = true
                             )
                         }
+                    )
+                    ZoomButton(
+                        icon = Icons.Filled.FitScreen,
+                        contentDescription = "Alles anzeigen",
+                        onClick = { goToFitAll() }
                     )
                 }
 
@@ -441,7 +472,11 @@ private fun TreeCard(
 }
 
 @Composable
-private fun ZoomButton(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun ZoomButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String? = null,
+    onClick: () -> Unit
+) {
     Box(
         modifier = Modifier
             .size(38.dp)
@@ -450,6 +485,6 @@ private fun ZoomButton(icon: androidx.compose.ui.graphics.vector.ImageVector, on
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
+        Icon(imageVector = icon, contentDescription = contentDescription, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
     }
 }

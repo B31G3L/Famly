@@ -113,6 +113,33 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
     }
     partnerOnlyPairs.forEach { (a, b) -> dsu.union(a, b) }
 
+    // Separates DSU NUR für echte Paare (ohne den gleich folgenden Merge
+    // mehrerer Elternpaare zu einer Reihe) - wird unten benutzt, um
+    // innerhalb eines zusammengeführten Blocks die Paare nebeneinander zu
+    // halten (sonst könnten z. B. bei "meine Eltern" + "Eltern meiner
+    // Partnerin" die vier Personen alphabetisch gemischt werden und die
+    // Paar-Linie würde zwischen den falschen zwei Personen gezeichnet).
+    val coupleDsu = Dsu()
+    unions.keys.forEach { key -> key.drop(1).forEach { coupleDsu.union(key.first(), it) } }
+    partnerOnlyPairs.forEach { (a, b) -> coupleDsu.union(a, b) }
+
+    // Mehrere Eltern-PAARE, die zum SELBEN Kind-Block gehören (z. B. "meine
+    // Eltern" UND "die Eltern meiner Partnerin", beide Elternteile des
+    // gemeinsamen Paar-Blocks "Ich + Partner:in") sollen als EINE
+    // gemeinsame Großeltern-Reihe nebeneinander stehen. Ohne das würde nur
+    // die zuerst gefundene Elternseite direkt über dem Paar landen und die
+    // zweite als unabhängiger, beliebig weit entfernter Wurzel-Block enden
+    // (nur noch über eine lange, quer laufende Linie verbunden) - genau das
+    // "kaputte" Bild bei Schwiegereltern.
+    unions.keys
+        .groupBy { parents -> dsu.find(unions.getValue(parents).first()) }
+        .values
+        .filter { parentSets -> parentSets.size > 1 }
+        .forEach { parentSets ->
+            val representatives = parentSets.map { it.first() }
+            representatives.drop(1).forEach { dsu.union(representatives.first(), it) }
+        }
+
     val blockParticipantIds = parentIds + partnerOnlyPairs.flatMap { (a, b) -> listOf(a, b) }
     val blockOf = HashMap<String, String>()
     ordered.forEach { person ->
@@ -120,12 +147,20 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
     }
 
     val blockMembers = LinkedHashMap<String, MutableList<Person>>()
-    ordered.forEach { blockMembers.getOrPut(blockOf.getValue(it.id)) { mutableListOf() }.add(it) }
+    // Erst nach Paar-Zugehörigkeit sortieren (coupleDsu), DANACH erst nach
+    // Block einsortieren - so bleiben z. B. bei einer zusammengeführten
+    // Großeltern-Reihe "Anita+Rolf" und "Nastja+Gerhard" jeweils als Paar
+    // nebeneinander, statt durch die globale (generation, slot, name)
+    // Sortierung von `ordered` alphabetisch durchmischt zu werden.
+    ordered
+        .sortedBy { coupleDsu.find(it.id) }
+        .forEach { blockMembers.getOrPut(blockOf.getValue(it.id)) { mutableListOf() }.add(it) }
 
-    // Kind-Blöcke zuordnen. Ein Block kann nur EINEN Elternblock als Anker
-    // haben (Partner bringen ihre eigene Herkunftsfamilie mit) - der erste
-    // Anspruch gewinnt, die übrige Verbindung wird später als längere Linie
-    // gezeichnet.
+    // Kind-Blöcke zuordnen. Der "zwei Elternpaare für denselben Kind-Block"-
+    // Fall (Schwiegereltern) ist jetzt schon oben durch den dsu-Merge
+    // abgedeckt - hier kann trotzdem theoretisch mehrfach derselbe Kind-Block
+    // auftauchen (z. B. bei noch nicht sauber migrierten Altdaten), daher
+    // bleibt "erster Anspruch gewinnt" als Sicherheitsnetz bestehen.
     val childBlocks = LinkedHashMap<String, MutableList<String>>()
     val claimed = HashSet<String>()
     unions.entries

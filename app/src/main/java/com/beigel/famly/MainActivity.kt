@@ -1,5 +1,6 @@
 package com.beigel.famly
 
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -9,26 +10,42 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.core.content.edit
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.lifecycle.lifecycleScope
 import com.beigel.famly.ui.navigation.FamlyNavHost
+import com.beigel.famly.ui.navigation.FamlyRoutes
 import com.beigel.famly.ui.theme.FamlyTheme
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.launch
 
 private const val TAG = "FamlyStartup"
+private const val PREFS_NAME = "famly_prefs"
+private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
 
 class MainActivity : ComponentActivity() {
 
     private val appContainer by lazy { (application as FamlyApplication).appContainer }
+    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Onboarding nur beim allerersten Start zeigen, nicht bei jedem
+        // App-Start erneut. Einfaches SharedPreferences-Flag reicht hier -
+        // keine strukturierten Daten, keine zusätzliche DataStore-Abhängigkeit
+        // nötig.
+        val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+        val startDestination = if (onboardingCompleted) {
+            FamlyRoutes.DASHBOARD
+        } else {
+            FamlyRoutes.ONBOARDING
+        }
 
         // Anonyme Anmeldung + Familie sicherstellen, noch bevor die erste
         // Compose-Frame Firestore-Daten braucht. Läuft im Hintergrund weiter,
@@ -56,7 +73,11 @@ class MainActivity : ComponentActivity() {
                     FamlyNavHost(
                         familyRepository = appContainer.familyRepository,
                         authRepository = appContainer.authRepository,
-                        onSignInWithGoogle = { triggerGoogleSignIn() }
+                        onSignInWithGoogle = { triggerGoogleSignIn() },
+                        startDestination = startDestination,
+                        onOnboardingCompleted = {
+                            prefs.edit { putBoolean(KEY_ONBOARDING_COMPLETED, true) }
+                        }
                     )
                 }
             }
