@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -21,7 +22,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FitScreen
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Icon
@@ -34,6 +38,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -93,7 +98,86 @@ fun TreeScreen(
     focusPersonId: String? = null,
     selfPersonId: String = "ich"
 ) {
-    val layout = remember(members) { buildTreeLayout(members) }
+    // Welche Personen sind gerade "eingeklappt" (ihr kompletter Ast wird
+    // durch einen Zusammenfassungs-Chip ersetzt)? Bleibt über
+    // Konfigurationsänderungen hinweg erhalten (rememberSaveable).
+    var collapsedIds by rememberSaveable(
+        saver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+    ) { mutableStateOf(emptySet<String>()) }
+
+    // Direkte Kinder je Person, aus der VOLLSTÄNDIGEN (ungefilterten)
+    // Mitgliederliste - Grundlage für die Ausklapp-Logik.
+    val childrenOf = remember(members) {
+        val map = HashMap<String, MutableList<String>>()
+        members.forEach { child ->
+            child.parentIds.forEach { parentId ->
+                map.getOrPut(parentId) { mutableListOf() }.add(child.id)
+            }
+        }
+        map
+    }
+
+    // Alle Personen, die (transitiv) unterhalb eines eingeklappten Astes
+    // hängen - diese werden aus dem Layout rausgefiltert, ihr eingeklappter
+    // "Wurzel"-Vorfahre selbst bleibt sichtbar.
+    val hiddenIds = remember(collapsedIds, childrenOf) {
+        val hidden = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        queue.addAll(collapsedIds)
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            childrenOf[current]?.forEach { childId ->
+                if (hidden.add(childId)) queue.add(childId)
+            }
+        }
+        hidden
+    }
+
+    val visibleMembers = remember(members, hiddenIds) {
+        if (hiddenIds.isEmpty()) members else members.filter { it.id !in hiddenIds }
+    }
+
+    /** Anzahl ALLER (nicht nur direkter) Nachkommen - für die Chip-Beschriftung. */
+    fun countDescendants(personId: String): Int {
+        var count = 0
+        val seen = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        childrenOf[personId]?.forEach { queue.add(it) }
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (!seen.add(current)) continue
+            count++
+            childrenOf[current]?.forEach { queue.add(it) }
+        }
+        return count
+    }
+
+    val layout = remember(visibleMembers) { buildTreeLayout(visibleMembers) }
+
+    // Falls die Fokus-Person (z. B. gerade neu hinzugefügt) in einem
+    // eingeklappten Ast steckt, den betroffenen Ast automatisch wieder
+    // aufklappen - sonst würde der Fokus-Sprung ins Leere laufen, weil die
+    // Person aus dem Layout rausgefiltert ist.
+    LaunchedEffect(focusPersonId, hiddenIds) {
+        if (focusPersonId == null || focusPersonId !in hiddenIds) return@LaunchedEffect
+        val toExpand = collapsedIds.filter { collapsedId ->
+            val seen = mutableSetOf<String>()
+            val queue = ArrayDeque<String>()
+            queue.add(collapsedId)
+            var found = false
+            while (queue.isNotEmpty()) {
+                val current = queue.removeFirst()
+                if (!seen.add(current)) continue
+                if (current == focusPersonId) {
+                    found = true
+                    break
+                }
+                childrenOf[current]?.forEach { queue.add(it) }
+            }
+            found
+        }
+        if (toExpand.isNotEmpty()) collapsedIds = collapsedIds - toExpand.toSet()
+    }
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(FOCUS_SCALE) }
     val offsetX = remember { Animatable(0f) }
@@ -109,7 +193,11 @@ fun TreeScreen(
             Column(modifier = Modifier.padding(22.dp, 22.dp, 22.dp, 10.dp)) {
                 Text("Stammbaum", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "${layout.nodes.size} Personen · ${layout.generationCount} Generationen",
+                    if (collapsedIds.isEmpty()) {
+                        "${layout.nodes.size} Personen · ${layout.generationCount} Generationen"
+                    } else {
+                        "${layout.nodes.size} von ${members.size} Personen sichtbar · ${layout.generationCount} Generationen"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = FamlyTextSecondary
                 )
@@ -316,6 +404,34 @@ fun TreeScreen(
                                     isSelf = node.person.id == selfPersonId,
                                     modifier = Modifier.offset(x = animatedX, y = animatedY)
                                 )
+
+                                val hasChildren = childrenOf[node.person.id]?.isNotEmpty() == true
+                                val isCollapsed = node.person.id in collapsedIds
+                                if (hasChildren && isCollapsed) {
+                                    // Ganzer Ast eingeklappt: statt der (ausgeblendeten)
+                                    // Kinder-Reihe steht hier ein kompakter Chip mit
+                                    // Anzahl, der den Ast wieder aufklappt.
+                                    CollapsedBranchChip(
+                                        count = countDescendants(node.person.id),
+                                        onClick = { collapsedIds = collapsedIds - node.person.id },
+                                        modifier = Modifier.offset(
+                                            x = animatedX,
+                                            y = animatedY + CARD_H.dp + 10.dp
+                                        )
+                                    )
+                                } else if (hasChildren) {
+                                    // Noch ausgeklappt, aber einklappbar - kleiner,
+                                    // dezenter Trigger unten an der Karte statt
+                                    // eines vollen Chips (der würde bei jeder
+                                    // ausgeklappten Person unnötig Platz wegnehmen).
+                                    CollapseTrigger(
+                                        onClick = { collapsedIds = collapsedIds + node.person.id },
+                                        modifier = Modifier.offset(
+                                            x = animatedX + (CARD_W.dp - 22.dp) / 2f,
+                                            y = animatedY + CARD_H.dp - 11.dp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -468,6 +584,74 @@ private fun TreeCard(
             Text(sub, fontSize = 11.5.sp, color = FamlyTextSecondary, fontWeight = FontWeight.Bold)
         }
         Box(modifier = Modifier.padding(bottom = 12.dp))
+    }
+}
+
+/**
+ * Chip statt einer ausgeblendeten Kinder-Reihe, wenn ein Ast eingeklappt
+ * ist. Zeigt die Gesamtzahl der versteckten Nachkommen (nicht nur direkte
+ * Kinder), Tap klappt den Ast wieder auf.
+ */
+@Composable
+private fun CollapsedBranchChip(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.width(CARD_W.dp), contentAlignment = Alignment.TopCenter) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(100.dp))
+                .background(FamlyWhite)
+                .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.25f), RoundedCornerShape(100.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Group,
+                    contentDescription = null,
+                    tint = FamlyPetrolPrimary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    "$count einblenden",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = FamlyPetrolPrimary
+                )
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = FamlyPetrolPrimary,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Kleiner, dezenter Kreis-Button unten an einer Karte mit Kindern, um
+ * deren Ast einzuklappen. Bewusst kein voller Chip wie beim eingeklappten
+ * Zustand - würde bei jeder ausgeklappten Person unnötig Platz wegnehmen.
+ */
+@Composable
+private fun CollapseTrigger(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(22.dp)
+            .clip(RoundedCornerShape(50))
+            .background(FamlyWhite)
+            .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.3f), RoundedCornerShape(50))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.ExpandMore,
+            contentDescription = "Ast einklappen",
+            tint = FamlyTextSecondary,
+            modifier = Modifier.size(14.dp)
+        )
     }
 }
 
