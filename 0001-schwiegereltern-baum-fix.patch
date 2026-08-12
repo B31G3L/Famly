@@ -1,0 +1,305 @@
+From 3889cd43640a41bd3ab626fbd2a48875dae05f95 Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 22:28:43 +0000
+Subject: [PATCH] Baum: Schwiegereltern (zweites Elternpaar desselben
+ Paar-Blocks) korrekt als gemeinsame Reihe zeichnen statt als verlorenen
+ Wurzel-Block
+
+Bug: Wenn ein Paar (z.B. 'Ich' + Partner:in) von BEIDEN Seiten Eltern
+im Baum hat, konnte der Layout-Algorithmus nur eine Elternseite direkt
+darueber positionieren (erster Treffer gewinnt). Die zweite Seite
+landete als unabhaengiger Wurzel-Block irgendwo im Baum, oft mit
+grossem Abstand und einer langen, quer laufenden Verbindungslinie.
+
+Fix in TreeLayout.buildTreeLayout:
+- Neuer dsu-Merge-Schritt: Elternpaare, deren Kinder im selben
+  (bereits durch Partner-Zusammenfuehrung vereinten) Kind-Block
+  landen, werden selbst zu einem gemeinsamen Block vereint - beide
+  Elternpaare stehen dadurch automatisch als eine Reihe nebeneinander
+  ueber ihren gemeinsamen Kindern, mit kurzen, sauberen Linien
+- Separates coupleDsu (nur echte Paare, ohne den Mehrfach-Merge) haelt
+  beim Sortieren der Block-Mitglieder jedes Paar zusammen - sonst
+  koennten die vier Personen durch die globale
+  (generation, slot, name)-Sortierung alphabetisch durchmischt werden
+  und die Partner-Linie zwischen den falschen zwei Personen entstehen
+---
+ .../java/com/beigel/famly/MainActivity.kt     | 23 +++++++-
+ .../famly/ui/navigation/FamlyNavHost.kt       |  8 ++-
+ .../famly/ui/screens/tree/TreeLayout.kt       | 47 +++++++++++++--
+ .../famly/ui/screens/tree/TreeScreen.kt       | 57 +++++++++++++++----
+ 4 files changed, 116 insertions(+), 19 deletions(-)
+
+diff --git a/app/src/main/java/com/beigel/famly/MainActivity.kt b/app/src/main/java/com/beigel/famly/MainActivity.kt
+index 904b104..2b6c40d 100644
+--- a/app/src/main/java/com/beigel/famly/MainActivity.kt
++++ b/app/src/main/java/com/beigel/famly/MainActivity.kt
+@@ -1,5 +1,6 @@
+ package com.beigel.famly
+ 
++import android.content.Context
+ import android.os.Bundle
+ import android.util.Log
+ import android.widget.Toast
+@@ -9,27 +10,43 @@ import androidx.activity.enableEdgeToEdge
+ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.material3.Surface
+ import androidx.compose.ui.Modifier
++import androidx.core.content.edit
+ import androidx.credentials.CredentialManager
+ import androidx.credentials.CustomCredential
+ import androidx.credentials.GetCredentialRequest
+ import androidx.credentials.exceptions.GetCredentialException
+ import androidx.lifecycle.lifecycleScope
+ import com.beigel.famly.ui.navigation.FamlyNavHost
++import com.beigel.famly.ui.navigation.FamlyRoutes
+ import com.beigel.famly.ui.theme.FamlyTheme
+ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+ import kotlinx.coroutines.launch
+ 
+ private const val TAG = "FamlyStartup"
++private const val PREFS_NAME = "famly_prefs"
++private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
+ 
+ class MainActivity : ComponentActivity() {
+ 
+     private val appContainer by lazy { (application as FamlyApplication).appContainer }
++    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+ 
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+         enableEdgeToEdge()
+ 
++        // Onboarding nur beim allerersten Start zeigen, nicht bei jedem
++        // App-Start erneut. Einfaches SharedPreferences-Flag reicht hier -
++        // keine strukturierten Daten, keine zusätzliche DataStore-Abhängigkeit
++        // nötig.
++        val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
++        val startDestination = if (onboardingCompleted) {
++            FamlyRoutes.DASHBOARD
++        } else {
++            FamlyRoutes.ONBOARDING
++        }
++
+         // Anonyme Anmeldung + Familie sicherstellen, noch bevor die erste
+         // Compose-Frame Firestore-Daten braucht. Läuft im Hintergrund weiter,
+         // die UI zeigt bis dahin einfach einen leeren/kurz nachladenden Zustand.
+@@ -56,7 +73,11 @@ class MainActivity : ComponentActivity() {
+                     FamlyNavHost(
+                         familyRepository = appContainer.familyRepository,
+                         authRepository = appContainer.authRepository,
+-                        onSignInWithGoogle = { triggerGoogleSignIn() }
++                        onSignInWithGoogle = { triggerGoogleSignIn() },
++                        startDestination = startDestination,
++                        onOnboardingCompleted = {
++                            prefs.edit { putBoolean(KEY_ONBOARDING_COMPLETED, true) }
++                        }
+                     )
+                 }
+             }
+diff --git a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+index a31c85a..9d2320c 100644
+--- a/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
++++ b/app/src/main/java/com/beigel/famly/ui/navigation/FamlyNavHost.kt
+@@ -72,6 +72,8 @@ fun FamlyNavHost(
+     familyRepository: FamilyRepository,
+     authRepository: AuthRepository,
+     onSignInWithGoogle: () -> Unit,
++    startDestination: String = FamlyRoutes.ONBOARDING,
++    onOnboardingCompleted: () -> Unit = {},
+     navController: NavHostController = rememberNavController()
+ ) {
+     val backStackEntry by navController.currentBackStackEntryAsState()
+@@ -163,12 +165,16 @@ fun FamlyNavHost(
+     ) { innerPadding ->
+         NavHost(
+             navController = navController,
+-            startDestination = FamlyRoutes.ONBOARDING,
++            startDestination = startDestination,
+             modifier = Modifier.padding(innerPadding)
+         ) {
+             composable(FamlyRoutes.ONBOARDING) {
+                 OnboardingScreen(
+                     onGetStarted = {
++                        // Persistiert (siehe MainActivity), damit das
++                        // Onboarding nur beim allerersten Start gezeigt wird,
++                        // nicht bei jedem App-Start erneut.
++                        onOnboardingCompleted()
+                         navController.navigate(FamlyRoutes.DASHBOARD) {
+                             popUpTo(FamlyRoutes.ONBOARDING) { inclusive = true }
+                         }
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+index 94ed382..ea0422c 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+@@ -113,6 +113,33 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
+     }
+     partnerOnlyPairs.forEach { (a, b) -> dsu.union(a, b) }
+ 
++    // Separates DSU NUR für echte Paare (ohne den gleich folgenden Merge
++    // mehrerer Elternpaare zu einer Reihe) - wird unten benutzt, um
++    // innerhalb eines zusammengeführten Blocks die Paare nebeneinander zu
++    // halten (sonst könnten z. B. bei "meine Eltern" + "Eltern meiner
++    // Partnerin" die vier Personen alphabetisch gemischt werden und die
++    // Paar-Linie würde zwischen den falschen zwei Personen gezeichnet).
++    val coupleDsu = Dsu()
++    unions.keys.forEach { key -> key.drop(1).forEach { coupleDsu.union(key.first(), it) } }
++    partnerOnlyPairs.forEach { (a, b) -> coupleDsu.union(a, b) }
++
++    // Mehrere Eltern-PAARE, die zum SELBEN Kind-Block gehören (z. B. "meine
++    // Eltern" UND "die Eltern meiner Partnerin", beide Elternteile des
++    // gemeinsamen Paar-Blocks "Ich + Partner:in") sollen als EINE
++    // gemeinsame Großeltern-Reihe nebeneinander stehen. Ohne das würde nur
++    // die zuerst gefundene Elternseite direkt über dem Paar landen und die
++    // zweite als unabhängiger, beliebig weit entfernter Wurzel-Block enden
++    // (nur noch über eine lange, quer laufende Linie verbunden) - genau das
++    // "kaputte" Bild bei Schwiegereltern.
++    unions.keys
++        .groupBy { parents -> dsu.find(unions.getValue(parents).first()) }
++        .values
++        .filter { parentSets -> parentSets.size > 1 }
++        .forEach { parentSets ->
++            val representatives = parentSets.map { it.first() }
++            representatives.drop(1).forEach { dsu.union(representatives.first(), it) }
++        }
++
+     val blockParticipantIds = parentIds + partnerOnlyPairs.flatMap { (a, b) -> listOf(a, b) }
+     val blockOf = HashMap<String, String>()
+     ordered.forEach { person ->
+@@ -120,12 +147,20 @@ internal fun buildTreeLayout(members: List<Person>): TreeLayout {
+     }
+ 
+     val blockMembers = LinkedHashMap<String, MutableList<Person>>()
+-    ordered.forEach { blockMembers.getOrPut(blockOf.getValue(it.id)) { mutableListOf() }.add(it) }
+-
+-    // Kind-Blöcke zuordnen. Ein Block kann nur EINEN Elternblock als Anker
+-    // haben (Partner bringen ihre eigene Herkunftsfamilie mit) - der erste
+-    // Anspruch gewinnt, die übrige Verbindung wird später als längere Linie
+-    // gezeichnet.
++    // Erst nach Paar-Zugehörigkeit sortieren (coupleDsu), DANACH erst nach
++    // Block einsortieren - so bleiben z. B. bei einer zusammengeführten
++    // Großeltern-Reihe "Anita+Rolf" und "Nastja+Gerhard" jeweils als Paar
++    // nebeneinander, statt durch die globale (generation, slot, name)
++    // Sortierung von `ordered` alphabetisch durchmischt zu werden.
++    ordered
++        .sortedBy { coupleDsu.find(it.id) }
++        .forEach { blockMembers.getOrPut(blockOf.getValue(it.id)) { mutableListOf() }.add(it) }
++
++    // Kind-Blöcke zuordnen. Der "zwei Elternpaare für denselben Kind-Block"-
++    // Fall (Schwiegereltern) ist jetzt schon oben durch den dsu-Merge
++    // abgedeckt - hier kann trotzdem theoretisch mehrfach derselbe Kind-Block
++    // auftauchen (z. B. bei noch nicht sauber migrierten Altdaten), daher
++    // bleibt "erster Anspruch gewinnt" als Sicherheitsnetz bestehen.
+     val childBlocks = LinkedHashMap<String, MutableList<String>>()
+     val claimed = HashSet<String>()
+     unions.entries
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+index 219c2c6..f8af063 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.Add
++import androidx.compose.material.icons.filled.FitScreen
+ import androidx.compose.material.icons.filled.Person
+ import androidx.compose.material.icons.filled.Remove
+ import androidx.compose.material3.Icon
+@@ -161,6 +162,30 @@ fun TreeScreen(
+                     }
+                 }
+ 
++                /**
++                 * Skalierung, bei der der GESAMTE Baum in den Viewport passt.
++                 * Wird für die allererste Ansicht verwendet, damit ein großer
++                 * Baum nicht schon beim Öffnen nur in einem winzigen
++                 * Ausschnitt zu sehen ist - man bekommt erst die Übersicht,
++                 * kann dann gezielt reinzoomen.
++                 */
++                fun fitAllScale(): Float =
++                    min(viewportWidth / contentWidth, viewportHeight / contentHeight)
++                        .coerceIn(MIN_SCALE, MAX_SCALE)
++
++                /** Animiert zur Übersichtsansicht, bei der der komplette Baum sichtbar ist. */
++                fun goToFitAll() {
++                    val target = fitAllScale()
++                    val targetX = (viewportWidth - contentWidth * target) / 2f
++                    val targetY = (viewportHeight - contentHeight * target) / 2f
++                    scope.launch {
++                        val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
++                        launch { scale.animateTo(target, spec) }
++                        launch { offsetX.animateTo(targetX, spec) }
++                        launch { offsetY.animateTo(targetY, spec) }
++                    }
++                }
++
+                 LaunchedEffect(focusPersonId, layout, viewportWidth, viewportHeight) {
+                     if (layout.nodes.isEmpty() || viewportWidth <= 0f || viewportHeight <= 0f) {
+                         return@LaunchedEffect
+@@ -193,19 +218,20 @@ fun TreeScreen(
+                     // nachliefert, läuft dieser Effekt erneut und fährt hin.
+                     if (hasSettled) return@LaunchedEffect
+                     val self = layout.nodes.find { it.person.id == selfPersonId }
++                    // min(FOCUS_SCALE, fitAllScale()): bei einem kleinen Baum
++                    // ganz normal auf FOCUS_SCALE zentriert auf "Ich", bei
++                    // einem grossen Baum stattdessen so weit rausgezoomt,
++                    // dass alles auf einen Blick sichtbar ist.
++                    val initialScale = min(FOCUS_SCALE, fitAllScale())
+                     if (self != null) {
+-                        val destination = offsetCenteredOn(self, FOCUS_SCALE)
+-                        scale.snapTo(FOCUS_SCALE)
++                        val destination = offsetCenteredOn(self, initialScale)
++                        scale.snapTo(initialScale)
+                         offsetX.snapTo(destination.x)
+                         offsetY.snapTo(destination.y)
+                     } else {
+-                        val fitted = min(
+-                            viewportWidth / contentWidth,
+-                            viewportHeight / contentHeight
+-                        ).coerceIn(MIN_SCALE, 1f)
+-                        scale.snapTo(fitted)
+-                        offsetX.snapTo((viewportWidth - contentWidth * fitted) / 2f)
+-                        offsetY.snapTo((viewportHeight - contentHeight * fitted) / 2f)
++                        scale.snapTo(initialScale)
++                        offsetX.snapTo((viewportWidth - contentWidth * initialScale) / 2f)
++                        offsetY.snapTo((viewportHeight - contentHeight * initialScale) / 2f)
+                     }
+                     hasSettled = true
+                 }
+@@ -323,6 +349,11 @@ fun TreeScreen(
+                             )
+                         }
+                     )
++                    ZoomButton(
++                        icon = Icons.Filled.FitScreen,
++                        contentDescription = "Alles anzeigen",
++                        onClick = { goToFitAll() }
++                    )
+                 }
+ 
+                 // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon,
+@@ -441,7 +472,11 @@ private fun TreeCard(
+ }
+ 
+ @Composable
+-private fun ZoomButton(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
++private fun ZoomButton(
++    icon: androidx.compose.ui.graphics.vector.ImageVector,
++    contentDescription: String? = null,
++    onClick: () -> Unit
++) {
+     Box(
+         modifier = Modifier
+             .size(38.dp)
+@@ -450,6 +485,6 @@ private fun ZoomButton(icon: androidx.compose.ui.graphics.vector.ImageVector, on
+             .clickable(onClick = onClick),
+         contentAlignment = Alignment.Center
+     ) {
+-        Icon(imageVector = icon, contentDescription = null, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
++        Icon(imageVector = icon, contentDescription = contentDescription, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
+     }
+ }
+\ No newline at end of file
+-- 
+2.43.0
+

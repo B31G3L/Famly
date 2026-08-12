@@ -102,7 +102,7 @@ fun TreeScreen(
     // durch einen Zusammenfassungs-Chip ersetzt)? Bleibt über
     // Konfigurationsänderungen hinweg erhalten (rememberSaveable).
     var collapsedIds by rememberSaveable(
-        saver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+        stateSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
     ) { mutableStateOf(emptySet<String>()) }
 
     // Direkte Kinder je Person, aus der VOLLSTÄNDIGEN (ungefilterten)
