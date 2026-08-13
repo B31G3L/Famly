@@ -32,8 +32,8 @@ import com.beigel.famly.data.repository.FamilyRepository
 import com.beigel.famly.ui.components.FamlyBottomBar
 import com.beigel.famly.ui.components.FamlyBottomDestination
 import com.beigel.famly.ui.screens.addperson.AddPersonScreen
-import com.beigel.famly.ui.screens.dashboard.DashboardScreen
 import com.beigel.famly.ui.screens.invite.InviteScreen
+import com.beigel.famly.ui.screens.members.MembersScreen
 import com.beigel.famly.ui.screens.onboarding.OnboardingScreen
 import com.beigel.famly.ui.screens.persondetail.PersonDetailScreen
 import com.beigel.famly.ui.screens.profile.ProfileMenuEntry
@@ -43,11 +43,11 @@ import kotlinx.coroutines.launch
 
 object FamlyRoutes {
     const val ONBOARDING = "onboarding"
-    const val DASHBOARD = "dashboard"
     const val TREE = "tree?focusPersonId={focusPersonId}"
     const val PERSON_DETAIL = "person_detail/{personId}"
     const val ADD_PERSON = "add_person?personId={personId}&relativeOf={relativeOf}&relationType={relationType}"
     const val INVITE = "invite"
+    const val MEMBERS = "members"
     const val PROFILE = "profile"
 
     fun personDetail(personId: String) = "person_detail/$personId"
@@ -91,7 +91,6 @@ fun FamlyNavHost(
     val authUser by authRepository.currentUser.collectAsState()
 
     val members = familyTree.members
-    val recentlyAdded = members.filter { it.id != SELF_PERSON_ID }.takeLast(2).reversed()
     // Für "Liste teilen" zählen nur Personen, die tatsächlich über den
     // Einladungscode beigetreten sind (echter Account, erkennbar an uid).
     // Rein manuell angelegte Baum-Einträge (z. B. verstorbene Verwandte ohne
@@ -121,14 +120,15 @@ fun FamlyNavHost(
     // gebaut (analog zur Bottom-Bar), hat sich aber als kompletter No-Op
     // erwiesen: navigate() lief durch, ohne den Back-Stack überhaupt zu
     // verändern (siehe Debug-Logs). Stattdessen jetzt zwei unabhängige,
-    // simple Schritte: erst zurückpoppen bis (aber ohne) Dashboard, dann
-    // ganz normal zu Tree navigieren.
+    // simple Schritte: erst zurückpoppen bis (aber ohne) den Baum
+    // (Startbildschirm seit dem Wegfall von Dashboard), dann ganz normal
+    // zu Tree navigieren.
     fun goToTreeFocusedOn(personId: String) {
         Log.d(TAG, "goToTreeFocusedOn($personId) wird ausgeführt")
         Log.d(TAG, "Back-Stack VOR popBackStack: ${navController.currentBackStack.value.map { it.destination.route }}")
         pendingFocusPersonId = personId
-        val popped = navController.popBackStack(FamlyRoutes.DASHBOARD, false)
-        Log.d(TAG, "popBackStack(DASHBOARD) Ergebnis=$popped, Back-Stack danach: ${navController.currentBackStack.value.map { it.destination.route }}")
+        val popped = navController.popBackStack(FamlyRoutes.TREE, false)
+        Log.d(TAG, "popBackStack(TREE) Ergebnis=$popped, Back-Stack danach: ${navController.currentBackStack.value.map { it.destination.route }}")
         navController.navigate(FamlyRoutes.tree()) {
             launchSingleTop = true
         }
@@ -148,13 +148,13 @@ fun FamlyNavHost(
                         // Bewusster Tab-Wechsel: kein Auto-Fokus mehr, der Baum
                         // soll da stehen bleiben, wo der Nutzer ihn verlassen hat.
                         pendingFocusPersonId = null
-                        val resolvedRoute = if (route == FamlyBottomDestination.TREE.route) {
+                        val resolvedRoute = if (route == FamlyBottomDestination.FAMILIE.route) {
                             FamlyRoutes.tree()
                         } else {
                             route
                         }
                         navController.navigate(resolvedRoute) {
-                            popUpTo(FamlyRoutes.DASHBOARD) { saveState = true }
+                            popUpTo(FamlyRoutes.TREE) { saveState = true }
                             launchSingleTop = true
                             restoreState = true
                         }
@@ -175,21 +175,10 @@ fun FamlyNavHost(
                         // Onboarding nur beim allerersten Start gezeigt wird,
                         // nicht bei jedem App-Start erneut.
                         onOnboardingCompleted()
-                        navController.navigate(FamlyRoutes.DASHBOARD) {
+                        navController.navigate(FamlyRoutes.tree()) {
                             popUpTo(FamlyRoutes.ONBOARDING) { inclusive = true }
                         }
                     }
-                )
-            }
-
-            composable(FamlyRoutes.DASHBOARD) {
-                DashboardScreen(
-                    userName = currentUserName,
-                    familyTree = familyTree,
-                    recentlyAdded = recentlyAdded,
-                    onOpenTree = { navController.navigate(FamlyRoutes.tree()) },
-                    onOpenPerson = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) },
-                    onOpenSelf = { navController.navigate(FamlyRoutes.personDetail(SELF_PERSON_ID)) }
                 )
             }
 
@@ -355,7 +344,7 @@ fun FamlyNavHost(
                             coroutineScope.launch {
                                 familyRepository.deletePerson(existingPerson!!.id)
                                     .onSuccess {
-                                        navController.popBackStack(FamlyRoutes.DASHBOARD, inclusive = false)
+                                        navController.popBackStack(FamlyRoutes.TREE, inclusive = false)
                                     }
                                     .onFailure { error ->
                                         Toast.makeText(
@@ -381,20 +370,35 @@ fun FamlyNavHost(
                 )
             }
 
+            composable(FamlyRoutes.MEMBERS) {
+                MembersScreen(
+                    members = members,
+                    onBack = { navController.popBackStack() },
+                    onOpenPerson = { person -> navController.navigate(FamlyRoutes.personDetail(person.id)) }
+                )
+            }
+
             composable(FamlyRoutes.PROFILE) {
                 val isAnonymous = authUser?.isAnonymous ?: true
                 ProfileScreen(
                     name = "$currentUserName Müller",
                     email = authUser?.email ?: "${currentUserName.lowercase()}@example.com",
                     menuEntries = listOf(
-                        ProfileMenuEntry("Familie verwalten") {},
+                        ProfileMenuEntry("Familie einladen") { navController.navigate(FamlyRoutes.INVITE) },
+                        ProfileMenuEntry("Mitglieder verwalten") { navController.navigate(FamlyRoutes.MEMBERS) },
                         ProfileMenuEntry(
                             if (isAnonymous) "Mit Google sichern" else "Mit Google verknüpft"
                         ) {
                             if (isAnonymous) onSignInWithGoogle()
                         },
                         ProfileMenuEntry("Benachrichtigungen") {},
-                        ProfileMenuEntry("Hilfe & Feedback") {}
+                        ProfileMenuEntry("Hilfe & Feedback") {},
+                        ProfileMenuEntry("Abmelden") {
+                            authRepository.signOut()
+                            navController.navigate(FamlyRoutes.ONBOARDING) {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        }
                     )
                 )
             }

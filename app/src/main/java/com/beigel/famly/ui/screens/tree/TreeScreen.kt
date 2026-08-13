@@ -1,94 +1,77 @@
 package com.beigel.famly.ui.screens.tree
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitScreen
-import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.beigel.famly.data.model.Person
 import com.beigel.famly.ui.components.FamlyAvatar
 import com.beigel.famly.ui.theme.FamlyAccentOrange
-import com.beigel.famly.ui.theme.FamlyGenColors
+import com.beigel.famly.ui.theme.FamlyBackground
 import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyTextPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyTreeLine
 import com.beigel.famly.ui.theme.FamlyWhite
-import kotlinx.coroutines.launch
-import kotlin.math.min
 
-private val TreeCanvasBackground = Color(0xFFFAF6EF)
-private val LineWidth = 1.6.dp
-private val PartnerLineWidth = 2.2.dp
-private val LineCornerRadius = 12.dp
-private const val MIN_SCALE = 0.25f
-private const val MAX_SCALE = 1.6f
-private const val FOCUS_SCALE = 0.9f
-private const val FOCUS_ANIMATION_MS = 480
-private const val REFLOW_ANIMATION_MS = 420
+private val CARD_WIDTH = 78.dp
+private val CENTER_CARD_WIDTH = 98.dp
 
 /**
- * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch).
- * Positionen und Verbindungslinien kommen komplett aus [buildTreeLayout] -
- * dieser Screen ist reine Darstellung.
+ * Baum als beidseitig aufklappbarer "Ego-Baum": immer sichtbar sind die
+ * fokussierte Person + Partner:in in der Mitte, beider Eltern darüber
+ * (meine UND ihre Seite gleichzeitig) und die gemeinsamen Kinder darunter.
+ * Alles WEITER weg (Großeltern, Urgroßeltern, Enkelkinder, ...) ist über
+ * "+"-Buttons einzeln aufklappbar; der Auf-/Zugeklappt-Zustand ist pro
+ * Person global gemerkt und bleibt bestehen, auch wenn man auf eine andere
+ * Person umzentriert und wieder zurück navigiert.
  *
- * [focusPersonId] darf eine Person benennen, die noch NICHT in [members]
- * enthalten ist (z. B. direkt nach dem Speichern, bevor der Firestore-Snapshot
- * durch ist). Der Screen wartet in dem Fall und fährt die Person an, sobald sie
- * auftaucht - statt den Fokus stillschweigend zu verwerfen.
+ * Tippen auf eine Karte öffnet ein kleines Auswahl-Sheet: Detailansicht
+ * öffnen, oder den Baum auf diese Person umzentrieren.
  */
 @Composable
 fun TreeScreen(
@@ -98,577 +81,457 @@ fun TreeScreen(
     focusPersonId: String? = null,
     selfPersonId: String = "ich"
 ) {
-    // Welche Personen sind gerade "eingeklappt" (ihr kompletter Ast wird
-    // durch einen Zusammenfassungs-Chip ersetzt)? Bleibt über
-    // Konfigurationsänderungen hinweg erhalten (rememberSaveable).
-    var collapsedIds by rememberSaveable(
+    var centeredId by rememberSaveable { mutableStateOf(selfPersonId) }
+
+    LaunchedEffect(focusPersonId) {
+        if (focusPersonId != null) centeredId = focusPersonId
+    }
+
+    // Wer weitere Vorfahren/Nachkommen aufgeklappt hat - bleibt dauerhaft
+    // erhalten (auch über Umzentrieren und App-Neustarts hinweg).
+    var expandedAncestorsOf by rememberSaveable(
+        stateSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+    ) { mutableStateOf(emptySet<String>()) }
+    var expandedDescendantsOf by rememberSaveable(
         stateSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
     ) { mutableStateOf(emptySet<String>()) }
 
-    // Direkte Kinder je Person, aus der VOLLSTÄNDIGEN (ungefilterten)
-    // Mitgliederliste - Grundlage für die Ausklapp-Logik.
+    var sheetPerson by remember { mutableStateOf<Person?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    val byId = remember(members) { members.associateBy { it.id } }
     val childrenOf = remember(members) {
-        val map = HashMap<String, MutableList<String>>()
+        val map = HashMap<String, MutableList<Person>>()
         members.forEach { child ->
             child.parentIds.forEach { parentId ->
-                map.getOrPut(parentId) { mutableListOf() }.add(child.id)
+                map.getOrPut(parentId) { mutableListOf() }.add(child)
             }
         }
         map
     }
-
-    // Alle Personen, die (transitiv) unterhalb eines eingeklappten Astes
-    // hängen - diese werden aus dem Layout rausgefiltert, ihr eingeklappter
-    // "Wurzel"-Vorfahre selbst bleibt sichtbar.
-    val hiddenIds = remember(collapsedIds, childrenOf) {
-        val hidden = mutableSetOf<String>()
-        val queue = ArrayDeque<String>()
-        queue.addAll(collapsedIds)
-        while (queue.isNotEmpty()) {
-            val current = queue.removeFirst()
-            childrenOf[current]?.forEach { childId ->
-                if (hidden.add(childId)) queue.add(childId)
-            }
-        }
-        hidden
+    val centered = byId[centeredId] ?: byId[selfPersonId]
+    val searchResults = remember(searchQuery, members) {
+        val query = searchQuery.trim()
+        if (query.length < 2) emptyList() else members.filter { it.name.contains(query, ignoreCase = true) }.take(6)
     }
 
-    val visibleMembers = remember(members, hiddenIds) {
-        if (hiddenIds.isEmpty()) members else members.filter { it.id !in hiddenIds }
-    }
-
-    /** Anzahl ALLER (nicht nur direkter) Nachkommen - für die Chip-Beschriftung. */
-    fun countDescendants(personId: String): Int {
-        var count = 0
-        val seen = mutableSetOf<String>()
-        val queue = ArrayDeque<String>()
-        childrenOf[personId]?.forEach { queue.add(it) }
-        while (queue.isNotEmpty()) {
-            val current = queue.removeFirst()
-            if (!seen.add(current)) continue
-            count++
-            childrenOf[current]?.forEach { queue.add(it) }
-        }
-        return count
-    }
-
-    val layout = remember(visibleMembers) { buildTreeLayout(visibleMembers) }
-
-    // Falls die Fokus-Person (z. B. gerade neu hinzugefügt) in einem
-    // eingeklappten Ast steckt, den betroffenen Ast automatisch wieder
-    // aufklappen - sonst würde der Fokus-Sprung ins Leere laufen, weil die
-    // Person aus dem Layout rausgefiltert ist.
-    LaunchedEffect(focusPersonId, hiddenIds) {
-        if (focusPersonId == null || focusPersonId !in hiddenIds) return@LaunchedEffect
-        val toExpand = collapsedIds.filter { collapsedId ->
-            val seen = mutableSetOf<String>()
-            val queue = ArrayDeque<String>()
-            queue.add(collapsedId)
-            var found = false
-            while (queue.isNotEmpty()) {
-                val current = queue.removeFirst()
-                if (!seen.add(current)) continue
-                if (current == focusPersonId) {
-                    found = true
-                    break
-                }
-                childrenOf[current]?.forEach { queue.add(it) }
-            }
-            found
-        }
-        if (toExpand.isNotEmpty()) collapsedIds = collapsedIds - toExpand.toSet()
-    }
-    val scope = rememberCoroutineScope()
-    val scale = remember { Animatable(FOCUS_SCALE) }
-    val offsetX = remember { Animatable(0f) }
-    val offsetY = remember { Animatable(0f) }
-
-    // Merkt sich, auf wen zuletzt scharfgestellt wurde. Verhindert, dass der
-    // Baum bei jedem Rücksprung aus der Detailansicht erneut wegspringt.
-    var centeredFor by rememberSaveable { mutableStateOf<String?>(null) }
-    var hasSettled by rememberSaveable { mutableStateOf(false) }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.padding(22.dp, 22.dp, 22.dp, 10.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(FamlyBackground)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(22.dp, 22.dp, 22.dp, 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
                 Text("Stammbaum", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    if (collapsedIds.isEmpty()) {
-                        "${layout.nodes.size} Personen · ${layout.generationCount} Generationen"
-                    } else {
-                        "${layout.nodes.size} von ${members.size} Personen sichtbar · ${layout.generationCount} Generationen"
-                    },
+                    "${members.size} Personen",
                     style = MaterialTheme.typography.bodySmall,
                     color = FamlyTextSecondary
                 )
             }
-
-            BoxWithConstraints(
+            // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon, wie
+            // weit man sich im Baum umzentriert hat.
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(TreeCanvasBackground)
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(19.dp))
+                    .background(FamlyWhite)
+                    .clickable(onClick = onOpenSelf),
+                contentAlignment = Alignment.Center
             ) {
-                val density = LocalDensity.current
-                val viewportWidth = with(density) { maxWidth.toPx() }
-                val viewportHeight = with(density) { maxHeight.toPx() }
-                val contentWidth = with(density) { layout.width.dp.toPx() }
-                val contentHeight = with(density) { layout.height.dp.toPx() }
+                Icon(
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = "Zu mir",
+                    tint = FamlyPetrolPrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
 
-                fun clampX(value: Float, currentScale: Float) =
-                    clampOffset(value, contentWidth * currentScale, viewportWidth)
-
-                fun clampY(value: Float, currentScale: Float) =
-                    clampOffset(value, contentHeight * currentScale, viewportHeight)
-
-                /** Offset, bei dem [node] mittig im Viewport liegt. */
-                fun offsetCenteredOn(node: TreeNode, targetScale: Float): Offset {
-                    val centerX = with(density) { (node.x + CARD_W / 2f).dp.toPx() }
-                    val centerY = with(density) { (node.y + CARD_H / 2f).dp.toPx() }
-                    return Offset(
-                        clampX(viewportWidth / 2f - centerX * targetScale, targetScale),
-                        clampY(viewportHeight / 2f - centerY * targetScale, targetScale)
-                    )
-                }
-
-                fun applyZoom(newScale: Float, focalX: Float, focalY: Float, animate: Boolean) {
-                    val current = scale.value
-                    val target = newScale.coerceIn(MIN_SCALE, MAX_SCALE)
-                    if (target == current) return
-                    val factor = target / current
-                    val targetX = clampX(focalX - (focalX - offsetX.value) * factor, target)
-                    val targetY = clampY(focalY - (focalY - offsetY.value) * factor, target)
-                    scope.launch {
-                        if (animate) {
-                            launch { scale.animateTo(target, tween(180)) }
-                            launch { offsetX.animateTo(targetX, tween(180)) }
-                            launch { offsetY.animateTo(targetY, tween(180)) }
-                        } else {
-                            scale.snapTo(target)
-                            offsetX.snapTo(targetX)
-                            offsetY.snapTo(targetY)
-                        }
+        Column(modifier = Modifier.padding(22.dp, 0.dp, 22.dp, 10.dp)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Person suchen...") },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = FamlyTextSecondary) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Suche leeren",
+                            tint = FamlyTextSecondary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable { searchQuery = "" }
+                        )
                     }
-                }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                shape = RoundedCornerShape(100.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = FamlyWhite,
+                    focusedContainerColor = FamlyWhite,
+                    unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
+                    focusedBorderColor = FamlyPetrolPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
 
-                /**
-                 * Skalierung, bei der der GESAMTE Baum in den Viewport passt.
-                 * Wird für die allererste Ansicht verwendet, damit ein großer
-                 * Baum nicht schon beim Öffnen nur in einem winzigen
-                 * Ausschnitt zu sehen ist - man bekommt erst die Übersicht,
-                 * kann dann gezielt reinzoomen.
-                 */
-                fun fitAllScale(): Float =
-                    min(viewportWidth / contentWidth, viewportHeight / contentHeight)
-                        .coerceIn(MIN_SCALE, MAX_SCALE)
-
-                /** Animiert zur Übersichtsansicht, bei der der komplette Baum sichtbar ist. */
-                fun goToFitAll() {
-                    val target = fitAllScale()
-                    val targetX = (viewportWidth - contentWidth * target) / 2f
-                    val targetY = (viewportHeight - contentHeight * target) / 2f
-                    scope.launch {
-                        val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
-                        launch { scale.animateTo(target, spec) }
-                        launch { offsetX.animateTo(targetX, spec) }
-                        launch { offsetY.animateTo(targetY, spec) }
-                    }
-                }
-
-                LaunchedEffect(focusPersonId, layout, viewportWidth, viewportHeight) {
-                    if (layout.nodes.isEmpty() || viewportWidth <= 0f || viewportHeight <= 0f) {
-                        return@LaunchedEffect
-                    }
-
-                    val target = focusPersonId?.let { id -> layout.nodes.find { it.person.id == id } }
-                    if (target != null) {
-                        // Schon dort? Dann nicht erneut wegspringen.
-                        if (centeredFor == focusPersonId) return@LaunchedEffect
-                        val destination = offsetCenteredOn(target, FOCUS_SCALE)
-                        if (hasSettled) {
-                            // Sichtbar hinfahren, damit klar wird, wo die Person
-                            // im Baum gelandet ist.
-                            val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
-                            launch { scale.animateTo(FOCUS_SCALE, spec) }
-                            launch { offsetX.animateTo(destination.x, spec) }
-                            launch { offsetY.animateTo(destination.y, spec) }
-                        } else {
-                            scale.snapTo(FOCUS_SCALE)
-                            offsetX.snapTo(destination.x)
-                            offsetY.snapTo(destination.y)
-                        }
-                        centeredFor = focusPersonId
-                        hasSettled = true
-                        return@LaunchedEffect
-                    }
-
-                    // Fokus-Person (noch) nicht da: erst einmal eine sinnvolle
-                    // Startansicht zeigen. Sobald der Snapshot die Person
-                    // nachliefert, läuft dieser Effekt erneut und fährt hin.
-                    if (hasSettled) return@LaunchedEffect
-                    val self = layout.nodes.find { it.person.id == selfPersonId }
-                    // min(FOCUS_SCALE, fitAllScale()): bei einem kleinen Baum
-                    // ganz normal auf FOCUS_SCALE zentriert auf "Ich", bei
-                    // einem grossen Baum stattdessen so weit rausgezoomt,
-                    // dass alles auf einen Blick sichtbar ist.
-                    val initialScale = min(FOCUS_SCALE, fitAllScale())
-                    if (self != null) {
-                        val destination = offsetCenteredOn(self, initialScale)
-                        scale.snapTo(initialScale)
-                        offsetX.snapTo(destination.x)
-                        offsetY.snapTo(destination.y)
-                    } else {
-                        scale.snapTo(initialScale)
-                        offsetX.snapTo((viewportWidth - contentWidth * initialScale) / 2f)
-                        offsetY.snapTo((viewportHeight - contentHeight * initialScale) / 2f)
-                    }
-                    hasSettled = true
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(layout, viewportWidth, viewportHeight) {
-                            detectTransformGestures { centroid, pan, zoom, _ ->
-                                val current = scale.value
-                                val target = (current * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
-                                val factor = target / current
-                                // Punkt unter dem Finger bleibt stehen - vorher
-                                // zoomte der Baum immer zur linken oberen Ecke.
-                                val nextX = centroid.x - (centroid.x - offsetX.value) * factor + pan.x
-                                val nextY = centroid.y - (centroid.y - offsetY.value) * factor + pan.y
-                                scope.launch {
-                                    scale.snapTo(target)
-                                    offsetX.snapTo(clampX(nextX, target))
-                                    offsetY.snapTo(clampY(nextY, target))
-                                }
-                                // Manuelles Verschieben hebt den Auto-Fokus auf.
-                                if (centeredFor != null) centeredFor = null
-                            }
-                        }
-                ) {
-                    Box(
-                        modifier = Modifier
-                            // Block-Form: die Animatable-Werte werden erst in der
-                            // Draw-Phase gelesen, das erspart eine Recomposition
-                            // pro Frame beim Pannen/Zoomen.
-                            .graphicsLayer {
-                                scaleX = scale.value
-                                scaleY = scale.value
-                                translationX = offsetX.value
-                                translationY = offsetY.value
-                                transformOrigin = TransformOrigin(0f, 0f)
-                            }
-                            .size(layout.width.dp, layout.height.dp)
-                    ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val radius = LineCornerRadius.toPx()
-                            layout.links.forEach { link ->
-                                drawTreeLink(
-                                    points = link.points.map {
-                                        Offset(it.x.dp.toPx(), it.y.dp.toPx())
-                                    },
-                                    color = FamlyTreeLine,
-                                    strokeWidth = if (link.isPartner) {
-                                        PartnerLineWidth.toPx()
-                                    } else {
-                                        LineWidth.toPx()
-                                    },
-                                    cornerRadius = radius
-                                )
-                            }
-                        }
-
-                        layout.nodes.forEach { node ->
-                            // key() haelt die Composable-Identitaet ueber
-                            // Person.id fest, statt ueber die Iterationsreihenfolge -
-                            // sonst wuerde animateDpAsState bei jeder
-                            // Baum-Umsortierung faelschlich von vorne anfangen
-                            // (oder die falsche Karte animieren), weil Compose
-                            // sie sonst nur positionell wiederverwendet.
-                            key(node.person.id) {
-                                val animatedX by animateDpAsState(
-                                    targetValue = node.x.dp,
-                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
-                                    label = "treeCardX"
-                                )
-                                val animatedY by animateDpAsState(
-                                    targetValue = node.y.dp,
-                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
-                                    label = "treeCardY"
-                                )
-                                TreeCard(
-                                    person = node.person,
-                                    accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
-                                    onClick = { onPersonClick(node.person) },
-                                    highlighted = node.person.id == focusPersonId,
-                                    isSelf = node.person.id == selfPersonId,
-                                    modifier = Modifier.offset(x = animatedX, y = animatedY)
-                                )
-
-                                val hasChildren = childrenOf[node.person.id]?.isNotEmpty() == true
-                                val isCollapsed = node.person.id in collapsedIds
-                                if (hasChildren && isCollapsed) {
-                                    // Ganzer Ast eingeklappt: statt der (ausgeblendeten)
-                                    // Kinder-Reihe steht hier ein kompakter Chip mit
-                                    // Anzahl, der den Ast wieder aufklappt.
-                                    CollapsedBranchChip(
-                                        count = countDescendants(node.person.id),
-                                        onClick = { collapsedIds = collapsedIds - node.person.id },
-                                        modifier = Modifier.offset(
-                                            x = animatedX,
-                                            y = animatedY + CARD_H.dp + 10.dp
-                                        )
-                                    )
-                                } else if (hasChildren) {
-                                    // Noch ausgeklappt, aber einklappbar - kleiner,
-                                    // dezenter Trigger unten an der Karte statt
-                                    // eines vollen Chips (der würde bei jeder
-                                    // ausgeklappten Person unnötig Platz wegnehmen).
-                                    CollapseTrigger(
-                                        onClick = { collapsedIds = collapsedIds + node.person.id },
-                                        modifier = Modifier.offset(
-                                            x = animatedX + (CARD_W.dp - 22.dp) / 2f,
-                                            y = animatedY + CARD_H.dp - 11.dp
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
+            if (searchResults.isNotEmpty()) {
                 Column(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 14.dp, bottom = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(FamlyWhite)
                 ) {
-                    ZoomButton(
-                        icon = Icons.Filled.Add,
-                        onClick = {
-                            applyZoom(
-                                scale.value + 0.2f,
-                                viewportWidth / 2f,
-                                viewportHeight / 2f,
-                                animate = true
-                            )
+                    searchResults.forEach { result ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    centeredId = result.id
+                                    searchQuery = ""
+                                }
+                                .padding(14.dp, 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FamlyAvatar(initial = result.initial, accentType = result.accent, size = 28, cornerRadius = 10)
+                            Text(result.name, style = MaterialTheme.typography.bodyMedium)
                         }
+                    }
+                }
+            }
+        }
+
+        if (centered == null) {
+            Text(
+                "Noch keine Person gefunden",
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(24.dp),
+                color = FamlyTextSecondary
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val partner = byId[centered.partnerId]
+
+                // Meine Seite und die Seite der Partnerin/des Partners
+                // NEBENEINANDER, jeweils mit eigenem (ggf. aufgeklapptem)
+                // Vorfahren-Turm darüber. Bottom-Alignment sorgt dafür, dass
+                // die beiden Personen-Karten selbst auf gleicher Höhe
+                // landen, auch wenn eine Seite mehr Generationen aufgeklappt
+                // hat als die andere.
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    AncestorStack(
+                        person = centered,
+                        byId = byId,
+                        expandedAncestorsOf = expandedAncestorsOf,
+                        onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
+                        onTapCard = { sheetPerson = it },
+                        alwaysShowParents = true,
+                        isCenterCard = true
                     )
-                    ZoomButton(
-                        icon = Icons.Filled.Remove,
-                        onClick = {
-                            applyZoom(
-                                scale.value - 0.2f,
-                                viewportWidth / 2f,
-                                viewportHeight / 2f,
-                                animate = true
-                            )
-                        }
-                    )
-                    ZoomButton(
-                        icon = Icons.Filled.FitScreen,
-                        contentDescription = "Alles anzeigen",
-                        onClick = { goToFitAll() }
-                    )
+                    if (partner != null) {
+                        Icon(
+                            imageVector = Icons.Filled.Favorite,
+                            contentDescription = null,
+                            tint = FamlyAccentOrange,
+                            modifier = Modifier
+                                .padding(bottom = 14.dp)
+                                .size(13.dp)
+                        )
+                        AncestorStack(
+                            person = partner,
+                            byId = byId,
+                            expandedAncestorsOf = expandedAncestorsOf,
+                            onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
+                            onTapCard = { sheetPerson = it },
+                            alwaysShowParents = true,
+                            isCenterCard = false
+                        )
+                    }
                 }
 
-                // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon,
-                // wohin man im Baum gepannt/gezoomt hat.
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 14.dp, bottom = 14.dp)
-                        .size(52.dp)
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(FamlyPetrolPrimary)
-                        .clickable(onClick = onOpenSelf),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Person,
-                        contentDescription = "Zu mir",
-                        tint = FamlyWhite
+                val children = childrenOf[centered.id].orEmpty()
+                if (children.isNotEmpty()) {
+                    Connector()
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        children.forEach { child ->
+                            DescendantStack(
+                                person = child,
+                                childrenOf = childrenOf,
+                                expandedDescendantsOf = expandedDescendantsOf,
+                                onToggleDescendants = { id -> expandedDescendantsOf = expandedDescendantsOf.toggled(id) },
+                                onTapCard = { sheetPerson = it },
+                                alwaysShowChildren = false
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val tappedPerson = sheetPerson
+    if (tappedPerson != null) {
+        PersonActionSheet(
+            person = tappedPerson,
+            onDismiss = { sheetPerson = null },
+            onShowDetail = {
+                sheetPerson = null
+                onPersonClick(tappedPerson)
+            },
+            onRecenter = {
+                sheetPerson = null
+                centeredId = tappedPerson.id
+            }
+        )
+    }
+}
+
+private fun Set<String>.toggled(id: String): Set<String> = if (id in this) this - id else this + id
+
+/**
+ * Rendert [person] MIT ihrem Vorfahren-Turm darüber (rekursiv, jeweils
+ * Mama+Papa nebeneinander). [alwaysShowParents] gilt nur für die
+ * äußerste (Basis-)Ebene - für alle rekursiv aufgerufenen Vorfahren
+ * entscheidet ausschließlich [expandedAncestorsOf], ob ihre eigenen Eltern
+ * mit angezeigt werden oder nur ein "+" erscheint.
+ */
+@Composable
+private fun AncestorStack(
+    person: Person,
+    byId: Map<String, Person>,
+    expandedAncestorsOf: Set<String>,
+    onToggleAncestors: (String) -> Unit,
+    onTapCard: (Person) -> Unit,
+    alwaysShowParents: Boolean,
+    isCenterCard: Boolean
+) {
+    val explicitMother = byId[person.motherId]
+    val explicitFather = byId[person.fatherId]
+    val unclassifiedParents = person.parentIds
+        .filter { it != person.motherId && it != person.fatherId }
+        .mapNotNull { byId[it] }
+    val mother = explicitMother ?: unclassifiedParents.getOrNull(0)
+    val father = explicitFather ?: unclassifiedParents.firstOrNull { it.id != mother?.id }
+    val hasParents = mother != null || father != null
+    val showParents = alwaysShowParents || person.id in expandedAncestorsOf
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (hasParents && showParents) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                mother?.let {
+                    AncestorStack(
+                        person = it,
+                        byId = byId,
+                        expandedAncestorsOf = expandedAncestorsOf,
+                        onToggleAncestors = onToggleAncestors,
+                        onTapCard = onTapCard,
+                        alwaysShowParents = false,
+                        isCenterCard = false
                     )
                 }
+                father?.let {
+                    AncestorStack(
+                        person = it,
+                        byId = byId,
+                        expandedAncestorsOf = expandedAncestorsOf,
+                        onToggleAncestors = onToggleAncestors,
+                        onTapCard = onTapCard,
+                        alwaysShowParents = false,
+                        isCenterCard = false
+                    )
+                }
+            }
+            Connector()
+        } else if (hasParents) {
+            PlusButton(onClick = { onToggleAncestors(person.id) })
+            Connector(height = 8.dp)
+        }
+        PersonCard(person = person, isCenter = isCenterCard, onClick = { onTapCard(person) })
+    }
+}
+
+/**
+ * Spiegelbildlich zu [AncestorStack], nur nach unten: [person] MIT ihrem
+ * Nachkommen-Turm darunter.
+ */
+@Composable
+private fun DescendantStack(
+    person: Person,
+    childrenOf: Map<String, List<Person>>,
+    expandedDescendantsOf: Set<String>,
+    onToggleDescendants: (String) -> Unit,
+    onTapCard: (Person) -> Unit,
+    alwaysShowChildren: Boolean
+) {
+    val children = childrenOf[person.id].orEmpty()
+    val showChildren = alwaysShowChildren || person.id in expandedDescendantsOf
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        PersonCard(person = person, isCenter = false, onClick = { onTapCard(person) })
+        if (children.isNotEmpty()) {
+            if (showChildren) {
+                Connector()
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    children.forEach { child ->
+                        DescendantStack(
+                            person = child,
+                            childrenOf = childrenOf,
+                            expandedDescendantsOf = expandedDescendantsOf,
+                            onToggleDescendants = onToggleDescendants,
+                            onTapCard = onTapCard,
+                            alwaysShowChildren = false
+                        )
+                    }
+                }
+            } else {
+                Connector(height = 8.dp)
+                PlusButton(onClick = { onToggleDescendants(person.id) })
             }
         }
     }
 }
 
-/**
- * Begrenzt das Verschieben so, dass der Baum nicht komplett aus dem Bild
- * gezogen werden kann. Passt der Inhalt komplett in den Viewport, wird er
- * zentriert.
- */
-private fun clampOffset(value: Float, scaledContent: Float, viewport: Float): Float =
-    if (scaledContent <= viewport) {
-        (viewport - scaledContent) / 2f
-    } else {
-        value.coerceIn(viewport - scaledContent, 0f)
-    }
-
-/** Zeichnet eine rechtwinklige Polyline mit abgerundeten Ecken. */
-private fun DrawScope.drawTreeLink(
-    points: List<Offset>,
-    color: Color,
-    strokeWidth: Float,
-    cornerRadius: Float
-) {
-    if (points.size < 2) return
-    val path = Path()
-    path.moveTo(points.first().x, points.first().y)
-    for (i in 1 until points.size - 1) {
-        val previous = points[i - 1]
-        val current = points[i]
-        val next = points[i + 1]
-        val inLength = (current - previous).getDistance()
-        val outLength = (next - current).getDistance()
-        if (inLength < 0.01f || outLength < 0.01f) continue
-        val radius = min(cornerRadius, min(inLength, outLength) / 2f)
-        val start = current + (previous - current) * (radius / inLength)
-        val end = current + (next - current) * (radius / outLength)
-        path.lineTo(start.x, start.y)
-        path.quadraticBezierTo(current.x, current.y, end.x, end.y)
-    }
-    path.lineTo(points.last().x, points.last().y)
-    drawPath(
-        path = path,
-        color = color,
-        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+/** Kurze vertikale Verbindungslinie zwischen zwei Reihen. */
+@Composable
+private fun Connector(height: androidx.compose.ui.unit.Dp = 16.dp) {
+    Box(
+        modifier = Modifier
+            .width(1.5.dp)
+            .height(height)
+            .background(FamlyTreeLine)
     )
 }
 
+/** Kleiner gestrichelter Kreis-Button: signalisiert "hier gibt's noch mehr, aufklappbar". */
 @Composable
-private fun TreeCard(
-    person: Person,
-    accent: Color,
-    onClick: () -> Unit,
-    highlighted: Boolean = false,
-    isSelf: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    val sub = if (person.isDeceased) person.birthDate.ifBlank { "verstorben" } else person.birthDate
-    // "Ich" bekommt eine dauerhafte Umrandung, damit man sich im Baum immer
-    // sofort wiederfindet - unabhängig vom temporären Fokus-Highlight.
-    val borderColor = when {
-        highlighted -> FamlyAccentOrange
-        isSelf -> FamlyPetrolPrimary
-        else -> null
-    }
-    Column(
-        modifier = modifier
-            .width(CARD_W.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .then(
-                if (borderColor != null) {
-                    Modifier.border(2.5.dp, borderColor, RoundedCornerShape(18.dp))
-                } else {
-                    Modifier
-                }
-            )
-            .background(FamlyWhite)
-            .clickable(onClick = onClick)
-            .padding(top = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        FamlyAvatar(initial = person.initial, accent = accent, size = 48, cornerRadius = 24)
-        Text(
-            person.name,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Bold,
-            color = FamlyTextPrimary,
-            maxLines = 1
-        )
-        if (sub.isNotBlank()) {
-            Text(sub, fontSize = 11.5.sp, color = FamlyTextSecondary, fontWeight = FontWeight.Bold)
-        }
-        Box(modifier = Modifier.padding(bottom = 12.dp))
-    }
-}
-
-/**
- * Chip statt einer ausgeblendeten Kinder-Reihe, wenn ein Ast eingeklappt
- * ist. Zeigt die Gesamtzahl der versteckten Nachkommen (nicht nur direkte
- * Kinder), Tap klappt den Ast wieder auf.
- */
-@Composable
-private fun CollapsedBranchChip(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.width(CARD_W.dp), contentAlignment = Alignment.TopCenter) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(100.dp))
-                .background(FamlyWhite)
-                .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.25f), RoundedCornerShape(100.dp))
-                .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 8.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Group,
-                    contentDescription = null,
-                    tint = FamlyPetrolPrimary,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    "$count einblenden",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = FamlyPetrolPrimary
-                )
-                Icon(
-                    imageVector = Icons.Filled.ChevronRight,
-                    contentDescription = null,
-                    tint = FamlyPetrolPrimary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-        }
-    }
-}
-
-/**
- * Kleiner, dezenter Kreis-Button unten an einer Karte mit Kindern, um
- * deren Ast einzuklappen. Bewusst kein voller Chip wie beim eingeklappten
- * Zustand - würde bei jeder ausgeklappten Person unnötig Platz wegnehmen.
- */
-@Composable
-private fun CollapseTrigger(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun PlusButton(onClick: () -> Unit) {
     Box(
-        modifier = modifier
+        modifier = Modifier
             .size(22.dp)
             .clip(RoundedCornerShape(50))
             .background(FamlyWhite)
-            .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.3f), RoundedCornerShape(50))
+            .border(1.dp, FamlyTextSecondary.copy(alpha = 0.35f), RoundedCornerShape(50))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
-            imageVector = Icons.Filled.ExpandMore,
-            contentDescription = "Ast einklappen",
+            imageVector = Icons.Filled.Add,
+            contentDescription = "Weitere Personen anzeigen",
             tint = FamlyTextSecondary,
-            modifier = Modifier.size(14.dp)
+            modifier = Modifier.size(12.dp)
         )
     }
 }
 
+/** Personen-Karte: Avatar (Platzhalter fürs Foto), Name, Geburts-/Sterbedatum. */
 @Composable
-private fun ZoomButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String? = null,
-    onClick: () -> Unit
-) {
-    Box(
+private fun PersonCard(person: Person, isCenter: Boolean, onClick: () -> Unit) {
+    val dateLine = when {
+        person.isDeceased && person.birthDate.isNotBlank() && person.deathDate.isNotBlank() ->
+            "${person.birthDate} – ${person.deathDate}"
+        person.isDeceased && person.deathDate.isNotBlank() -> "† ${person.deathDate}"
+        person.birthDate.isNotBlank() -> person.birthDate
+        else -> null
+    }
+    Column(
         modifier = Modifier
-            .size(38.dp)
-            .clip(RoundedCornerShape(50))
+            .width(if (isCenter) CENTER_CARD_WIDTH else CARD_WIDTH)
+            .clip(RoundedCornerShape(if (isCenter) 16.dp else 14.dp))
             .background(FamlyWhite)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
+            .then(
+                if (isCenter) {
+                    Modifier.border(2.dp, FamlyPetrolPrimary, RoundedCornerShape(16.dp))
+                } else {
+                    Modifier.border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = if (isCenter) 10.dp else 8.dp, horizontal = 5.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Icon(imageVector = icon, contentDescription = contentDescription, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
+        FamlyAvatar(
+            initial = person.initial,
+            accentType = person.accent,
+            size = if (isCenter) 40 else 32,
+            cornerRadius = if (isCenter) 14 else 11
+        )
+        Text(
+            person.name,
+            style = if (isCenter) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+            color = FamlyTextPrimary,
+            maxLines = 1
+        )
+        if (dateLine != null) {
+            Text(dateLine, fontSize = if (isCenter) 10.5.sp else 9.5.sp, color = FamlyTextSecondary, maxLines = 1)
+        }
+    }
+}
+
+/** Auswahl-Sheet beim Antippen einer Karte: Detail öffnen oder Baum umzentrieren. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PersonActionSheet(
+    person: Person,
+    onDismiss: () -> Unit,
+    onShowDetail: () -> Unit,
+    onRecenter: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(modifier = Modifier.padding(bottom = 24.dp)) {
+            Row(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FamlyAvatar(initial = person.initial, accentType = person.accent, size = 32, cornerRadius = 11)
+                Text(person.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onShowDetail)
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(imageVector = Icons.Filled.Person, contentDescription = null, tint = FamlyTextSecondary)
+                Text("Person anzeigen", style = MaterialTheme.typography.bodyMedium)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onRecenter)
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(imageVector = Icons.Filled.FitScreen, contentDescription = null, tint = FamlyTextSecondary)
+                Text("Baum hierher zentrieren", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }

@@ -14,12 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Groups
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,15 +29,17 @@ import com.beigel.famly.ui.theme.FamlyPetrolPrimary
 import com.beigel.famly.ui.theme.FamlyTextSecondary
 import com.beigel.famly.ui.theme.FamlyWhite
 
+// Von frueher 4 Tabs (Dashboard/Baum/Einladen/Profil) auf 2 reduziert:
+// Dashboard ist als eigener Screen komplett entfallen (der Baum IST jetzt
+// der Startbildschirm), "Einladen" ist ins Profil-Menü gewandert statt ein
+// eigener Tab zu sein.
 enum class FamlyBottomDestination(
     val route: String,
     val label: String,
     val filledIcon: ImageVector,
     val outlinedIcon: ImageVector
 ) {
-    DASHBOARD("dashboard", "Dashboard", Icons.Filled.Home, Icons.Outlined.Home),
-    TREE("tree", "Baum", Icons.Filled.Groups, Icons.Outlined.Groups),
-    INVITE("invite", "Einladen", Icons.Filled.PersonAdd, Icons.Outlined.PersonAdd),
+    FAMILIE("tree", "Familie", Icons.Filled.Groups, Icons.Outlined.Groups),
     PROFILE("profile", "Profil", Icons.Filled.AccountCircle, Icons.Outlined.AccountCircle)
 }
 

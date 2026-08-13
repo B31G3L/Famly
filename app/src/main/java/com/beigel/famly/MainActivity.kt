@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
         // nötig.
         val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
         val startDestination = if (onboardingCompleted) {
-            FamlyRoutes.DASHBOARD
+            FamlyRoutes.tree()
         } else {
             FamlyRoutes.ONBOARDING
         }
