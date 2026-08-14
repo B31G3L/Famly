@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="demo_tab_overview">Overview</string>
+    <string name="demo_tab_tree">Family tree</string>
+    <string name="demo_tab_people">People</string>
+
+    <string name="demo_family_title">The Berger family</string>
+    <string name="demo_overview_subtitle">%1$d people · %2$d generations</string>
+    <string name="demo_stat_people">People</string>
+    <string name="demo_stat_living">%1$d living</string>
+    <string name="demo_stat_generations">Generations</string>
+    <string name="demo_stat_oldest">Oldest living</string>
+    <string name="demo_years_short">%1$d yrs</string>
+    <string name="demo_stat_gaps">Open gaps</string>
+    <string name="demo_stat_gaps_caption">Parents unknown</string>
+    <string name="demo_direct_line">Your direct line</string>
+    <string name="demo_show_in_tree">Show in tree</string>
+    <string name="demo_birthdays">Upcoming birthdays</string>
+    <string name="demo_birthday_turns">turning %1$d</string>
+    <string name="demo_today">today</string>
+    <string name="demo_in_days">in %1$d days</string>
+    <string name="demo_memorials">Remembrance days</string>
+    <string name="demo_gaps_title">Close the gaps</string>
+    <string name="demo_gaps_text">These people have no parents on record. Start at the top of the line – that is where each addition pays off most.</string>
+
+    <string name="demo_tree_ego">Starting point</string>
+    <string name="demo_tree_siblings">Siblings</string>
+    <string name="demo_tree_partners">Partners</string>
+    <string name="demo_zoom_in">Zoom in</string>
+    <string name="demo_zoom_out">Zoom out</string>
+    <string name="demo_center">Centre on starting person</string>
+    <string name="demo_badge_me">Me</string>
+    <string name="demo_expand_more">Show %1$d more</string>
+    <string name="demo_collapse">Collapse</string>
+    <string name="demo_sibling_children">See %1$d children</string>
+    <string name="demo_sibling_focus">Make starting point</string>
+    <string name="demo_legend">Lines</string>
+    <string name="demo_legend_paternal">paternal line</string>
+    <string name="demo_legend_maternal">maternal line</string>
+    <string name="demo_legend_descendants">descendants</string>
+    <string name="demo_legend_inlaw">married in</string>
+
+    <string name="demo_search_hint">Search name, place or job</string>
+    <string name="demo_filter_all">All</string>
+    <string name="demo_filter_living">Living</string>
+    <string name="demo_filter_deceased">Deceased</string>
+    <string name="demo_sort_az">A–Z</string>
+    <string name="demo_sort_year">By birth year</string>
+    <string name="demo_hits">%1$d results</string>
+    <string name="demo_unknown_place">Place unknown</string>
+
+    <string name="demo_birth_name">née %1$s</string>
+    <string name="demo_born_in">%1$s in %2$s</string>
+    <string name="demo_died">died %1$s</string>
+    <string name="demo_age_years">%1$d years</string>
+    <string name="demo_age_reached">lived to %1$d</string>
+    <string name="demo_group_parents">Parents</string>
+    <string name="demo_group_parents_empty">No parents on record</string>
+    <string name="demo_group_partner">Partner</string>
+    <string name="demo_group_partner_empty">No partnership on record</string>
+    <string name="demo_group_siblings">Siblings</string>
+    <string name="demo_group_siblings_empty">No siblings on record</string>
+    <string name="demo_group_children">Children</string>
+    <string name="demo_group_children_empty">No children on record</string>
+    <string name="demo_show_tree_from_here">Show tree from here</string>
+
+    <string name="demo_rel_self">Me</string>
+    <string name="demo_rel_mother">Mother</string>
+    <string name="demo_rel_father">Father</string>
+    <string name="demo_rel_grandmother">Grandmother</string>
+    <string name="demo_rel_grandfather">Grandfather</string>
+    <string name="demo_rel_great_grandmother">Great-grandmother</string>
+    <string name="demo_rel_great_grandfather">Great-grandfather</string>
+    <string name="demo_rel_great2_grandmother">Great-great-grandmother</string>
+    <string name="demo_rel_great2_grandfather">Great-great-grandfather</string>
+    <string name="demo_rel_ancestor_f">Ancestor</string>
+    <string name="demo_rel_ancestor_m">Ancestor</string>
+    <string name="demo_rel_daughter">Daughter</string>
+    <string name="demo_rel_son">Son</string>
+    <string name="demo_rel_granddaughter">Granddaughter</string>
+    <string name="demo_rel_grandson">Grandson</string>
+    <string name="demo_rel_great_granddaughter">Great-granddaughter</string>
+    <string name="demo_rel_great_grandson">Great-grandson</string>
+    <string name="demo_rel_descendant_f">Descendant</string>
+    <string name="demo_rel_descendant_m">Descendant</string>
+    <string name="demo_rel_sister">Sister</string>
+    <string name="demo_rel_brother">Brother</string>
+    <string name="demo_rel_niece">Niece</string>
+    <string name="demo_rel_nephew">Nephew</string>
+    <string name="demo_rel_grandniece">Grand-niece</string>
+    <string name="demo_rel_grandnephew">Grand-nephew</string>
+    <string name="demo_rel_aunt">Aunt</string>
+    <string name="demo_rel_uncle">Uncle</string>
+    <string name="demo_rel_greataunt">Great-aunt</string>
+    <string name="demo_rel_greatuncle">Great-uncle</string>
+    <string name="demo_rel_cousin_f">Cousin, degree %1$d</string>
+    <string name="demo_rel_cousin_m">Cousin, degree %1$d</string>
+    <string name="demo_rel_cousin_removed">, %1$d× removed</string>
+    <string name="demo_rel_partner_f">Partner</string>
+    <string name="demo_rel_partner_m">Partner</string>
+    <string name="demo_rel_inlaw_f">Partner of: %1$s</string>
+    <string name="demo_rel_inlaw_m">Partner of: %1$s</string>
+    <string name="demo_rel_unrelated">Related</string>
+
+</resources>

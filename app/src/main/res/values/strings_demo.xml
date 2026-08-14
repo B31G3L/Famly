@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Eigene Datei statt Ergänzung von strings.xml: Android führt alle Dateien in
+  values/ zusammen, so gibt es beim Übernehmen keinen Merge-Konflikt.
+-->
+<resources>
+
+    <!-- Bereiche -->
+    <string name="demo_tab_overview">Übersicht</string>
+    <string name="demo_tab_tree">Stammbaum</string>
+    <string name="demo_tab_people">Personen</string>
+
+    <!-- Übersicht -->
+    <string name="demo_family_title">Familie Berger</string>
+    <string name="demo_overview_subtitle">%1$d Personen · %2$d Generationen</string>
+    <string name="demo_stat_people">Personen</string>
+    <string name="demo_stat_living">%1$d lebend</string>
+    <string name="demo_stat_generations">Generationen</string>
+    <string name="demo_stat_oldest">Älteste lebende</string>
+    <string name="demo_years_short">%1$d J.</string>
+    <string name="demo_stat_gaps">Offene Lücken</string>
+    <string name="demo_stat_gaps_caption">Eltern unbekannt</string>
+    <string name="demo_direct_line">Deine direkte Linie</string>
+    <string name="demo_show_in_tree">Im Baum ansehen</string>
+    <string name="demo_birthdays">Nächste Geburtstage</string>
+    <string name="demo_birthday_turns">wird %1$d</string>
+    <string name="demo_today">heute</string>
+    <string name="demo_in_days">in %1$d Tagen</string>
+    <string name="demo_memorials">Gedenktage</string>
+    <string name="demo_gaps_title">Lücken schließen</string>
+    <string name="demo_gaps_text">Bei diesen Personen fehlen die Eltern. Fang oben in der Linie an – dort bringt jede Ergänzung am meisten.</string>
+
+    <!-- Stammbaum -->
+    <string name="demo_tree_ego">Ausgangspunkt</string>
+    <string name="demo_tree_siblings">Geschwister</string>
+    <string name="demo_tree_partners">Partner:innen</string>
+    <string name="demo_zoom_in">Vergrößern</string>
+    <string name="demo_zoom_out">Verkleinern</string>
+    <string name="demo_center">Auf Ausgangsperson zentrieren</string>
+    <string name="demo_badge_me">Ich</string>
+    <string name="demo_expand_more">%1$d weitere anzeigen</string>
+    <string name="demo_collapse">Einklappen</string>
+    <string name="demo_sibling_children">%1$d Kinder ansehen</string>
+    <string name="demo_sibling_focus">In den Fokus</string>
+    <string name="demo_legend">Linien</string>
+    <string name="demo_legend_paternal">väterliche Linie</string>
+    <string name="demo_legend_maternal">mütterliche Linie</string>
+    <string name="demo_legend_descendants">Nachkommen</string>
+    <string name="demo_legend_inlaw">angeheiratet</string>
+
+    <!-- Personen -->
+    <string name="demo_search_hint">Name, Ort oder Beruf suchen</string>
+    <string name="demo_filter_all">Alle</string>
+    <string name="demo_filter_living">Lebend</string>
+    <string name="demo_filter_deceased">Verstorben</string>
+    <string name="demo_sort_az">A–Z</string>
+    <string name="demo_sort_year">Nach Jahrgang</string>
+    <string name="demo_hits">%1$d Treffer</string>
+    <string name="demo_unknown_place">Ort unbekannt</string>
+
+    <!-- Detailansicht -->
+    <string name="demo_birth_name">geb. %1$s</string>
+    <string name="demo_born_in">%1$s in %2$s</string>
+    <string name="demo_died">verstorben am %1$s</string>
+    <string name="demo_age_years">%1$d Jahre</string>
+    <string name="demo_age_reached">%1$d Jahre alt geworden</string>
+    <string name="demo_group_parents">Eltern</string>
+    <string name="demo_group_parents_empty">Keine Eltern erfasst</string>
+    <string name="demo_group_partner">Partner:in</string>
+    <string name="demo_group_partner_empty">Keine Partnerschaft erfasst</string>
+    <string name="demo_group_siblings">Geschwister</string>
+    <string name="demo_group_siblings_empty">Keine Geschwister erfasst</string>
+    <string name="demo_group_children">Kinder</string>
+    <string name="demo_group_children_empty">Keine Kinder erfasst</string>
+    <string name="demo_show_tree_from_here">Baum von hier zeigen</string>
+
+    <!-- Verwandtschaft -->
+    <string name="demo_rel_self">Ich</string>
+    <string name="demo_rel_mother">Mutter</string>
+    <string name="demo_rel_father">Vater</string>
+    <string name="demo_rel_grandmother">Großmutter</string>
+    <string name="demo_rel_grandfather">Großvater</string>
+    <string name="demo_rel_great_grandmother">Urgroßmutter</string>
+    <string name="demo_rel_great_grandfather">Urgroßvater</string>
+    <string name="demo_rel_great2_grandmother">Ururgroßmutter</string>
+    <string name="demo_rel_great2_grandfather">Ururgroßvater</string>
+    <string name="demo_rel_ancestor_f">Vorfahrin</string>
+    <string name="demo_rel_ancestor_m">Vorfahre</string>
+    <string name="demo_rel_daughter">Tochter</string>
+    <string name="demo_rel_son">Sohn</string>
+    <string name="demo_rel_granddaughter">Enkelin</string>
+    <string name="demo_rel_grandson">Enkel</string>
+    <string name="demo_rel_great_granddaughter">Urenkelin</string>
+    <string name="demo_rel_great_grandson">Urenkel</string>
+    <string name="demo_rel_descendant_f">Nachfahrin</string>
+    <string name="demo_rel_descendant_m">Nachfahre</string>
+    <string name="demo_rel_sister">Schwester</string>
+    <string name="demo_rel_brother">Bruder</string>
+    <string name="demo_rel_niece">Nichte</string>
+    <string name="demo_rel_nephew">Neffe</string>
+    <string name="demo_rel_grandniece">Großnichte</string>
+    <string name="demo_rel_grandnephew">Großneffe</string>
+    <string name="demo_rel_aunt">Tante</string>
+    <string name="demo_rel_uncle">Onkel</string>
+    <string name="demo_rel_greataunt">Großtante</string>
+    <string name="demo_rel_greatuncle">Großonkel</string>
+    <string name="demo_rel_cousin_f">Cousine %1$d. Grades</string>
+    <string name="demo_rel_cousin_m">Cousin %1$d. Grades</string>
+    <string name="demo_rel_cousin_removed">, %1$d× entfernt</string>
+    <string name="demo_rel_partner_f">Partnerin</string>
+    <string name="demo_rel_partner_m">Partner</string>
+    <string name="demo_rel_inlaw_f">Partnerin von: %1$s</string>
+    <string name="demo_rel_inlaw_m">Partner von: %1$s</string>
+    <string name="demo_rel_unrelated">Verwandt</string>
+
+</resources>
