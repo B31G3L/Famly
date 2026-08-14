@@ -1,0 +1,1365 @@
+From 109e4503b3512237ec693c9e8c71b9d22a1f269e Mon Sep 17 00:00:00 2001
+From: Beigel <beigel@users.noreply.github.com>
+Date: Wed, 12 Aug 2026 20:16:07 +0000
+Subject: [PATCH] Baum komplett neu: Organigramm-Stil statt freiem
+ Karten+Linien-Canvas
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Kompletter Konzeptwechsel (siehe Chat-Diskussion) - TreeLayout.kt (der
+gesamte Positionierungs-Algorithmus mit Union-Find, Blöcken,
+Generationen-Zeilen) ist komplett raus, TreeScreen.kt ist von Grund
+auf neu.
+
+Neues Konzept, angelehnt an Microsoft Teams' Kontakt-Organigramm:
+- Zu jedem Zeitpunkt ist immer nur eine kleine Nachbarschaft sichtbar:
+  Eltern oben, fokussierte Person + Partner:in in der Mitte, Kinder
+  unten (max. 3 Reihen, nie mehr als eine Handvoll Karten gleichzeitig)
+- Tippen auf eine Eltern-/Partner:in-/Kind-Karte zentriert die Ansicht
+  neu auf diese Person (mit Fade+Scale-Übergangsanimation);
+  tippen auf die MITTLERE (aktuell fokussierte) Karte öffnet die
+  Detailansicht
+- Bei Partner:innen werden bewusst nur die EIGENEN Eltern angezeigt,
+  nicht gleichzeitig die der Partnerin/des Partners - dafür tippt man
+  auf die Partner-Karte und die Ansicht zentriert sich auf sie um,
+  deren eigene Eltern erscheinen dann oben (Variante A aus der
+  Diskussion)
+- Skaliert dadurch unabhängig von der Gesamtgröße der Familie immer
+  gleich gut - es wird nie der komplette Baum auf einmal gerendert,
+  keine Positionierungs-Mathematik/Überlappungs-Vermeidung mehr nötig
+- Kinder-Reihe ist horizontal scrollbar für den Fall vieler Kinder
+
+Fallback für Alt-/Migrationsdaten ohne motherId/fatherId (aus
+parentIds ableiten) wie im PersonDetailScreen übernommen.
+---
+ .../famly/ui/screens/tree/TreeLayout.kt       | 431 ----------
+ .../famly/ui/screens/tree/TreeScreen.kt       | 776 +++++-------------
+ 2 files changed, 206 insertions(+), 1001 deletions(-)
+ delete mode 100644 app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
+deleted file mode 100644
+index ea0422c..0000000
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeLayout.kt
++++ /dev/null
+@@ -1,431 +0,0 @@
+-package com.beigel.famly.ui.screens.tree
+-
+-import androidx.compose.ui.geometry.Offset
+-import com.beigel.famly.data.model.Person
+-import kotlin.math.abs
+-import kotlin.math.max
+-import kotlin.math.min
+-
+-/**
+- * Geometrie des Stammbaum-Canvas. Alle Werte in dp (als Float, damit die
+- * Layout-Berechnung frei von Compose-/Android-Abhängigkeiten bleibt und in
+- * reinen JVM-Unit-Tests laufen kann).
+- */
+-internal const val CARD_W = 148f
+-internal const val CARD_H = 138f
+-internal const val GAP_X = 28f
+-internal const val GAP_Y = 96f
+-internal const val SLOT_W = CARD_W + GAP_X
+-internal const val ROW_H = CARD_H + GAP_Y
+-internal const val CANVAS_PADDING = 48f
+-
+-/** Abstand zwischen zwei Geschwister-Teilbäumen, in Slot-Einheiten. */
+-private const val SIBLING_GAP = 0.35f
+-
+-internal data class TreeNode(
+-    val person: Person,
+-    val generation: Int,
+-    /** Linke obere Ecke der Karte, in dp. */
+-    val x: Float,
+-    val y: Float
+-) {
+-    val centerX: Float get() = x + CARD_W / 2f
+-    val centerY: Float get() = y + CARD_H / 2f
+-    val bottom: Float get() = y + CARD_H
+-}
+-
+-/**
+- * Verbindungslinie als Polyline aus rechtwinkligen Segmenten (dp).
+- * [isPartner] wird nur für die waagrechte Paar-Verbindung gesetzt und darf
+- * optisch abweichen (z. B. etwas kräftiger).
+- */
+-internal data class TreeLink(
+-    val points: List<Offset>,
+-    val isPartner: Boolean = false
+-)
+-
+-internal data class TreeLayout(
+-    val nodes: List<TreeNode>,
+-    val links: List<TreeLink>,
+-    val width: Float,
+-    val height: Float,
+-    val generationCount: Int
+-)
+-
+-/**
+- * Berechnet ein klassisches Stammbaum-Layout aus den Verwandtschafts-Daten.
+- *
+- * Wichtig: [Person.treePosition]`.slot` wird bewusst IGNORIERT. Der Slot ist im
+- * Repository nur ein fortlaufender Zähler ("nächster freier Slot") und hat
+- * keinerlei strukturelle Bedeutung - genau daher kamen die scheinbar wirren
+- * Linien: Kinder standen irgendwo in ihrer Reihe statt unter ihren Eltern,
+- * wodurch die Sammel-Linien quer durch die ganze Generation liefen.
+- *
+- * Stattdessen:
+- *  1. Eltern-Beziehungen normalisieren (parentIds, Fallback über connections).
+- *  2. "Unions" bilden: gleiches Eltern-Set = ein Familienzweig.
+- *  3. Eltern, die gemeinsame Kinder haben, zu einem Block (Paar) zusammenfassen.
+- *  4. Generationen aus der Struktur ableiten (Kind = Eltern + 1, Partner gleich).
+- *  5. Breiten bottom-up bestimmen, Positionen top-down verteilen -> Eltern
+- *     sitzen immer mittig über ihren Kindern, Geschwister stehen nebeneinander.
+- */
+-internal fun buildTreeLayout(members: List<Person>): TreeLayout {
+-    val people = members.filter { it.treePosition != null }
+-    if (people.isEmpty()) return TreeLayout(emptyList(), emptyList(), 0f, 0f, 0)
+-
+-    val byId = people.associateBy { it.id }
+-    val byName = people.associateBy { it.name }
+-
+-    // --- 1) Effektive Eltern -------------------------------------------------
+-    val parentsOf: Map<String, List<String>> = people.associate { person ->
+-        val direct = person.parentIds.filter { it != person.id && byId.containsKey(it) }
+-        val effective = direct.ifEmpty {
+-            // Altbestand ohne parentIds: aus dem richtungslosen connections-Feld
+-            // nur die Einträge aus einer HÖHEREN Generation als Eltern werten.
+-            person.connections
+-                .mapNotNull { byName[it] }
+-                .filter { it.id != person.id && it.treePosition!!.generation < person.treePosition!!.generation }
+-                .map { it.id }
+-        }
+-        person.id to effective.distinct().sorted()
+-    }
+-
+-    val order = compareBy<Person>({ it.treePosition!!.generation }, { it.treePosition!!.slot }, { it.name })
+-    val ordered = people.sortedWith(order)
+-
+-    // --- 2) Unions (Eltern-Set -> Kinder) ------------------------------------
+-    val unions = LinkedHashMap<List<String>, MutableList<String>>()
+-    ordered.forEach { child ->
+-        val parents = parentsOf.getValue(child.id)
+-        if (parents.isNotEmpty()) unions.getOrPut(parents) { mutableListOf() }.add(child.id)
+-    }
+-
+-    // --- 3) Blöcke: Eltern mit gemeinsamen Kindern stehen nebeneinander ------
+-    val parentIds = unions.keys.flatten().toSet()
+-    val dsu = Dsu()
+-    unions.keys.forEach { key -> key.drop(1).forEach { dsu.union(key.first(), it) } }
+-    // Partner:innen ohne gemeinsame Kinder (partnerId gesetzt, aber kein
+-    // eigener Eintrag in `unions`) trotzdem als Block zusammenfassen, damit
+-    // sie im Baum nebeneinander stehen und eine Paar-Linie bekommen.
+-    val partnerOnlyPairs = people.mapNotNull { person ->
+-        val partnerId = person.partnerId?.takeIf { byId.containsKey(it) } ?: return@mapNotNull null
+-        if (person.id < partnerId) person.id to partnerId else null
+-    }
+-    partnerOnlyPairs.forEach { (a, b) -> dsu.union(a, b) }
+-
+-    // Separates DSU NUR für echte Paare (ohne den gleich folgenden Merge
+-    // mehrerer Elternpaare zu einer Reihe) - wird unten benutzt, um
+-    // innerhalb eines zusammengeführten Blocks die Paare nebeneinander zu
+-    // halten (sonst könnten z. B. bei "meine Eltern" + "Eltern meiner
+-    // Partnerin" die vier Personen alphabetisch gemischt werden und die
+-    // Paar-Linie würde zwischen den falschen zwei Personen gezeichnet).
+-    val coupleDsu = Dsu()
+-    unions.keys.forEach { key -> key.drop(1).forEach { coupleDsu.union(key.first(), it) } }
+-    partnerOnlyPairs.forEach { (a, b) -> coupleDsu.union(a, b) }
+-
+-    // Mehrere Eltern-PAARE, die zum SELBEN Kind-Block gehören (z. B. "meine
+-    // Eltern" UND "die Eltern meiner Partnerin", beide Elternteile des
+-    // gemeinsamen Paar-Blocks "Ich + Partner:in") sollen als EINE
+-    // gemeinsame Großeltern-Reihe nebeneinander stehen. Ohne das würde nur
+-    // die zuerst gefundene Elternseite direkt über dem Paar landen und die
+-    // zweite als unabhängiger, beliebig weit entfernter Wurzel-Block enden
+-    // (nur noch über eine lange, quer laufende Linie verbunden) - genau das
+-    // "kaputte" Bild bei Schwiegereltern.
+-    unions.keys
+-        .groupBy { parents -> dsu.find(unions.getValue(parents).first()) }
+-        .values
+-        .filter { parentSets -> parentSets.size > 1 }
+-        .forEach { parentSets ->
+-            val representatives = parentSets.map { it.first() }
+-            representatives.drop(1).forEach { dsu.union(representatives.first(), it) }
+-        }
+-
+-    val blockParticipantIds = parentIds + partnerOnlyPairs.flatMap { (a, b) -> listOf(a, b) }
+-    val blockOf = HashMap<String, String>()
+-    ordered.forEach { person ->
+-        blockOf[person.id] = if (person.id in blockParticipantIds) "u:${dsu.find(person.id)}" else "p:${person.id}"
+-    }
+-
+-    val blockMembers = LinkedHashMap<String, MutableList<Person>>()
+-    // Erst nach Paar-Zugehörigkeit sortieren (coupleDsu), DANACH erst nach
+-    // Block einsortieren - so bleiben z. B. bei einer zusammengeführten
+-    // Großeltern-Reihe "Anita+Rolf" und "Nastja+Gerhard" jeweils als Paar
+-    // nebeneinander, statt durch die globale (generation, slot, name)
+-    // Sortierung von `ordered` alphabetisch durchmischt zu werden.
+-    ordered
+-        .sortedBy { coupleDsu.find(it.id) }
+-        .forEach { blockMembers.getOrPut(blockOf.getValue(it.id)) { mutableListOf() }.add(it) }
+-
+-    // Kind-Blöcke zuordnen. Der "zwei Elternpaare für denselben Kind-Block"-
+-    // Fall (Schwiegereltern) ist jetzt schon oben durch den dsu-Merge
+-    // abgedeckt - hier kann trotzdem theoretisch mehrfach derselbe Kind-Block
+-    // auftauchen (z. B. bei noch nicht sauber migrierten Altdaten), daher
+-    // bleibt "erster Anspruch gewinnt" als Sicherheitsnetz bestehen.
+-    val childBlocks = LinkedHashMap<String, MutableList<String>>()
+-    val claimed = HashSet<String>()
+-    unions.entries
+-        .sortedBy { entry -> entry.key.minOf { byId.getValue(it).treePosition!!.generation } }
+-        .forEach { (parents, children) ->
+-            val block = blockOf.getValue(parents.first())
+-            children.forEach { childId ->
+-                val childBlock = blockOf.getValue(childId)
+-                if (childBlock != block && claimed.add(childBlock)) {
+-                    childBlocks.getOrPut(block) { mutableListOf() }.add(childBlock)
+-                }
+-            }
+-        }
+-
+-    val roots = blockMembers.keys.filter { it !in claimed }
+-
+-    // --- 4) Generationen aus der Struktur ableiten ---------------------------
+-    val generation = HashMap<String, Int>()
+-    people.forEach { generation[it.id] = it.treePosition!!.generation }
+-    for (pass in 0 until min(people.size + 2, 40)) {
+-        var changed = false
+-        ordered.forEach { person ->
+-            val parents = parentsOf.getValue(person.id)
+-            if (parents.isNotEmpty()) {
+-                val target = parents.maxOf { generation.getValue(it) } + 1
+-                if (generation.getValue(person.id) < target) {
+-                    generation[person.id] = target
+-                    changed = true
+-                }
+-            }
+-        }
+-        blockMembers.values.forEach { group ->
+-            val target = group.maxOf { generation.getValue(it.id) }
+-            group.forEach {
+-                if (generation.getValue(it.id) < target) {
+-                    generation[it.id] = target
+-                    changed = true
+-                }
+-            }
+-        }
+-        if (!changed) break
+-    }
+-    val minGeneration = generation.values.min()
+-
+-    // --- 5) Breiten (bottom-up) ----------------------------------------------
+-    val widths = HashMap<String, Float>()
+-    roots.forEach { measure(it, blockMembers, childBlocks, widths, HashSet()) }
+-    blockMembers.keys.forEach { measure(it, blockMembers, childBlocks, widths, HashSet()) }
+-
+-    // --- 5b) Positionen (top-down) -------------------------------------------
+-    val blockLeft = HashMap<String, Float>()
+-    var cursor = 0f
+-    roots.forEach { root ->
+-        place(root, cursor, blockMembers, childBlocks, widths, blockLeft, HashSet())
+-        cursor += widths.getValue(root) + SIBLING_GAP * 2f
+-    }
+-    // Sicherheitsnetz: falls ein Block durch zyklische Daten nicht erreicht
+-    // wurde, hinten anhängen statt ihn auf 0/0 stapeln zu lassen.
+-    blockMembers.keys.forEach { block ->
+-        if (block !in blockLeft) {
+-            place(block, cursor, blockMembers, childBlocks, widths, blockLeft, HashSet())
+-            cursor += widths.getValue(block) + SIBLING_GAP * 2f
+-        }
+-    }
+-
+-    val nodes = blockMembers.flatMap { (block, group) ->
+-        val left = blockLeft[block] ?: 0f
+-        group.mapIndexed { index, person ->
+-            val gen = generation.getValue(person.id) - minGeneration
+-            TreeNode(
+-                person = person,
+-                generation = gen,
+-                x = (left + index) * SLOT_W,
+-                y = gen * ROW_H
+-            )
+-        }
+-    }
+-
+-    // --- 6) Linien ------------------------------------------------------------
+-    val nodeById = nodes.associateBy { it.person.id }
+-    val links = mutableListOf<TreeLink>()
+-    partnerOnlyPairs.forEach { (a, b) ->
+-        val first = nodeById[a] ?: return@forEach
+-        val second = nodeById[b] ?: return@forEach
+-        links += TreeLink(
+-            points = listOf(
+-                Offset(first.centerX, first.centerY),
+-                Offset(second.centerX, second.centerY)
+-            ),
+-            isPartner = true
+-        )
+-    }
+-    unions.forEach { (parents, children) ->
+-        val parentNodes = parents.mapNotNull { nodeById[it] }.sortedBy { it.x }
+-        val childNodes = children.mapNotNull { nodeById[it] }.sortedBy { it.x }
+-        if (parentNodes.isEmpty() || childNodes.isEmpty()) return@forEach
+-
+-        val parentBottom = parentNodes.maxOf { it.bottom }
+-        val childTop = childNodes.minOf { it.y }
+-        val busY = if (childTop > parentBottom) {
+-            parentBottom + (childTop - parentBottom) / 2f
+-        } else {
+-            parentBottom + GAP_Y / 2f
+-        }
+-
+-        val stemX: Float
+-        val stemY: Float
+-        if (parentNodes.size >= 2) {
+-            val first = parentNodes.first()
+-            val last = parentNodes.last()
+-            stemX = (first.centerX + last.centerX) / 2f
+-            val sideBySide = abs(first.y - last.y) < 0.5f &&
+-                    (last.centerX - first.centerX) <= SLOT_W * 1.05f
+-            if (sideBySide) {
+-                // Klassische Paar-Verbindung auf Höhe der Kartenmitte.
+-                links += TreeLink(
+-                    points = listOf(
+-                        Offset(first.centerX, first.centerY),
+-                        Offset(last.centerX, last.centerY)
+-                    ),
+-                    isPartner = true
+-                )
+-                stemY = first.centerY
+-            } else {
+-                // Eltern stehen nicht nebeneinander (Partner aus einer anderen
+-                // Herkunftsfamilie): unterhalb der Karten herumführen, damit
+-                // die Linie keine fremden Karten durchschneidet.
+-                val linkY = parentBottom + GAP_Y * 0.22f
+-                links += TreeLink(
+-                    points = listOf(
+-                        Offset(first.centerX, first.bottom),
+-                        Offset(first.centerX, linkY),
+-                        Offset(last.centerX, linkY),
+-                        Offset(last.centerX, last.bottom)
+-                    ),
+-                    isPartner = true
+-                )
+-                stemY = linkY
+-            }
+-        } else {
+-            stemX = parentNodes.first().centerX
+-            stemY = parentNodes.first().bottom
+-        }
+-
+-        childNodes.forEach { child ->
+-            links += TreeLink(
+-                simplify(
+-                    listOf(
+-                        Offset(stemX, stemY),
+-                        Offset(stemX, busY),
+-                        Offset(child.centerX, busY),
+-                        Offset(child.centerX, child.y)
+-                    )
+-                )
+-            )
+-        }
+-    }
+-
+-    val width = (nodes.maxOf { it.x } + CARD_W) + CANVAS_PADDING * 2
+-    val height = (nodes.maxOf { it.y } + CARD_H) + CANVAS_PADDING * 2
+-    val shifted = nodes.map { it.copy(x = it.x + CANVAS_PADDING, y = it.y + CANVAS_PADDING) }
+-    val shiftedLinks = links.map { link ->
+-        link.copy(points = link.points.map { Offset(it.x + CANVAS_PADDING, it.y + CANVAS_PADDING) })
+-    }
+-
+-    return TreeLayout(
+-        nodes = shifted,
+-        links = shiftedLinks,
+-        width = width,
+-        height = height,
+-        generationCount = generation.values.distinct().size
+-    )
+-}
+-
+-private fun measure(
+-    block: String,
+-    blockMembers: Map<String, List<Person>>,
+-    childBlocks: Map<String, List<String>>,
+-    widths: MutableMap<String, Float>,
+-    guard: MutableSet<String>
+-): Float {
+-    widths[block]?.let { return it }
+-    val ownWidth = (blockMembers[block]?.size ?: 1).toFloat()
+-    if (!guard.add(block)) return ownWidth
+-    val children = childBlocks[block].orEmpty()
+-    val childrenWidth = if (children.isEmpty()) {
+-        0f
+-    } else {
+-        children.fold(0f) { acc, child ->
+-            acc + measure(child, blockMembers, childBlocks, widths, guard)
+-        } + SIBLING_GAP * (children.size - 1)
+-    }
+-    val width = max(ownWidth, childrenWidth)
+-    widths[block] = width
+-    guard.remove(block)
+-    return width
+-}
+-
+-private fun place(
+-    block: String,
+-    bandLeft: Float,
+-    blockMembers: Map<String, List<Person>>,
+-    childBlocks: Map<String, List<String>>,
+-    widths: Map<String, Float>,
+-    result: MutableMap<String, Float>,
+-    guard: MutableSet<String>
+-) {
+-    if (!guard.add(block)) return
+-    val width = widths[block] ?: 1f
+-    val ownWidth = (blockMembers[block]?.size ?: 1).toFloat()
+-    result[block] = bandLeft + (width - ownWidth) / 2f
+-
+-    val children = childBlocks[block].orEmpty()
+-    if (children.isEmpty()) return
+-    val childrenWidth = children.fold(0f) { acc, child -> acc + (widths[child] ?: 1f) } +
+-            SIBLING_GAP * (children.size - 1)
+-    var cursor = bandLeft + (width - childrenWidth) / 2f
+-    children.forEach { child ->
+-        place(child, cursor, blockMembers, childBlocks, widths, result, guard)
+-        cursor += (widths[child] ?: 1f) + SIBLING_GAP
+-    }
+-}
+-
+-/** Entfernt doppelte und auf einer Geraden liegende Zwischenpunkte. */
+-private fun simplify(points: List<Offset>): List<Offset> {
+-    val cleaned = mutableListOf<Offset>()
+-    points.forEach { point ->
+-        val last = cleaned.lastOrNull()
+-        if (last == null || abs(last.x - point.x) > 0.01f || abs(last.y - point.y) > 0.01f) {
+-            cleaned += point
+-        }
+-    }
+-    if (cleaned.size < 3) return cleaned
+-    val result = mutableListOf(cleaned.first())
+-    for (i in 1 until cleaned.size - 1) {
+-        val previous = cleaned[i - 1]
+-        val current = cleaned[i]
+-        val next = cleaned[i + 1]
+-        val collinear = (abs(previous.x - current.x) < 0.01f && abs(current.x - next.x) < 0.01f) ||
+-                (abs(previous.y - current.y) < 0.01f && abs(current.y - next.y) < 0.01f)
+-        if (!collinear) result += current
+-    }
+-    result += cleaned.last()
+-    return result
+-}
+-
+-private class Dsu {
+-    private val parent = HashMap<String, String>()
+-
+-    fun find(node: String): String {
+-        parent.getOrPut(node) { node }
+-        var root = node
+-        while (parent.getValue(root) != root) root = parent.getValue(root)
+-        var current = node
+-        while (current != root) {
+-            val next = parent.getValue(current)
+-            parent[current] = root
+-            current = next
+-        }
+-        return root
+-    }
+-
+-    fun union(a: String, b: String) {
+-        val rootA = find(a)
+-        val rootB = find(b)
+-        if (rootA != rootB) parent[rootA] = rootB
+-    }
+-}
+\ No newline at end of file
+diff --git a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+index 5ad0992..788b2c6 100644
+--- a/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
++++ b/app/src/main/java/com/beigel/famly/ui/screens/tree/TreeScreen.kt
+@@ -1,94 +1,72 @@
+ package com.beigel.famly.ui.screens.tree
+ 
+-import androidx.compose.animation.core.Animatable
+-import androidx.compose.animation.core.FastOutSlowInEasing
+-import androidx.compose.animation.core.animateDpAsState
++import androidx.compose.animation.AnimatedContent
+ import androidx.compose.animation.core.tween
+-import androidx.compose.foundation.Canvas
++import androidx.compose.animation.fadeIn
++import androidx.compose.animation.fadeOut
++import androidx.compose.animation.scaleIn
++import androidx.compose.animation.scaleOut
++import androidx.compose.animation.togetherWith
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.border
+ import androidx.compose.foundation.clickable
+-import androidx.compose.foundation.gestures.detectTransformGestures
++import androidx.compose.foundation.horizontalScroll
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
+-import androidx.compose.foundation.layout.BoxWithConstraints
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.fillMaxSize
+-import androidx.compose.foundation.layout.offset
++import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.size
+ import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.layout.widthIn
++import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
+ import androidx.compose.material.icons.Icons
+-import androidx.compose.material.icons.filled.Add
+-import androidx.compose.material.icons.filled.ChevronRight
+-import androidx.compose.material.icons.filled.ExpandMore
+-import androidx.compose.material.icons.filled.FitScreen
+-import androidx.compose.material.icons.filled.Group
++import androidx.compose.material.icons.filled.Favorite
+ import androidx.compose.material.icons.filled.Person
+-import androidx.compose.material.icons.filled.Remove
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
+-import androidx.compose.runtime.key
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+-import androidx.compose.runtime.rememberCoroutineScope
+-import androidx.compose.runtime.saveable.listSaver
+ import androidx.compose.runtime.saveable.rememberSaveable
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
+-import androidx.compose.ui.geometry.Offset
+-import androidx.compose.ui.graphics.Color
+-import androidx.compose.ui.graphics.Path
+-import androidx.compose.ui.graphics.StrokeCap
+-import androidx.compose.ui.graphics.StrokeJoin
+-import androidx.compose.ui.graphics.TransformOrigin
+-import androidx.compose.ui.graphics.drawscope.DrawScope
+-import androidx.compose.ui.graphics.drawscope.Stroke
+-import androidx.compose.ui.graphics.graphicsLayer
+-import androidx.compose.ui.input.pointer.pointerInput
+-import androidx.compose.ui.platform.LocalDensity
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ import com.beigel.famly.data.model.Person
+ import com.beigel.famly.ui.components.FamlyAvatar
+ import com.beigel.famly.ui.theme.FamlyAccentOrange
+-import com.beigel.famly.ui.theme.FamlyGenColors
++import com.beigel.famly.ui.theme.FamlyBackground
+ import com.beigel.famly.ui.theme.FamlyPetrolPrimary
+ import com.beigel.famly.ui.theme.FamlyTextPrimary
+ import com.beigel.famly.ui.theme.FamlyTextSecondary
+ import com.beigel.famly.ui.theme.FamlyTreeLine
+ import com.beigel.famly.ui.theme.FamlyWhite
+-import kotlinx.coroutines.launch
+-import kotlin.math.min
+ 
+-private val TreeCanvasBackground = Color(0xFFFAF6EF)
+-private val LineWidth = 1.6.dp
+-private val PartnerLineWidth = 2.2.dp
+-private val LineCornerRadius = 12.dp
+-private const val MIN_SCALE = 0.25f
+-private const val MAX_SCALE = 1.6f
+-private const val FOCUS_SCALE = 0.9f
+-private const val FOCUS_ANIMATION_MS = 480
+-private const val REFLOW_ANIMATION_MS = 420
++private val ROLE_CARD_WIDTH = 84.dp
++private val CENTER_CARD_WIDTH = 108.dp
+ 
+ /**
+- * Baum-Darstellung als frei verschieb- und zoombarer Canvas (Pan + Pinch).
+- * Positionen und Verbindungslinien kommen komplett aus [buildTreeLayout] -
+- * dieser Screen ist reine Darstellung.
++ * Baum als "Organigramm" (wie Microsoft Teams' Kontakt-Chart): zu jedem
++ * Zeitpunkt sieht man nur eine kleine Nachbarschaft - Eltern oben, die
++ * fokussierte Person (+ Partner:in) in der Mitte, Kinder unten. Tippen auf
++ * eine umliegende Karte zentriert die Ansicht neu auf diese Person; tippen
++ * auf die MITTLERE Karte öffnet die Detailansicht.
+  *
+- * [focusPersonId] darf eine Person benennen, die noch NICHT in [members]
+- * enthalten ist (z. B. direkt nach dem Speichern, bevor der Firestore-Snapshot
+- * durch ist). Der Screen wartet in dem Fall und fährt die Person an, sobald sie
+- * auftaucht - statt den Fokus stillschweigend zu verwerfen.
++ * Bewusst KEIN freies Pan/Zoom über den gesamten Baum mehr (siehe ältere
++ * Versionen dieser Datei in der Git-Historie) - dieser Ansatz bleibt
++ * unabhängig von der Gesamtgröße der Familie immer gleich übersichtlich,
++ * weil nie mehr als eine Handvoll Karten gleichzeitig gerendert wird.
+  */
+ @Composable
+ fun TreeScreen(
+@@ -98,577 +76,235 @@ fun TreeScreen(
+     focusPersonId: String? = null,
+     selfPersonId: String = "ich"
+ ) {
+-    // Welche Personen sind gerade "eingeklappt" (ihr kompletter Ast wird
+-    // durch einen Zusammenfassungs-Chip ersetzt)? Bleibt über
+-    // Konfigurationsänderungen hinweg erhalten (rememberSaveable).
+-    var collapsedIds by rememberSaveable(
+-        stateSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+-    ) { mutableStateOf(emptySet<String>()) }
++    var centeredId by rememberSaveable { mutableStateOf(selfPersonId) }
+ 
+-    // Direkte Kinder je Person, aus der VOLLSTÄNDIGEN (ungefilterten)
+-    // Mitgliederliste - Grundlage für die Ausklapp-Logik.
+-    val childrenOf = remember(members) {
+-        val map = HashMap<String, MutableList<String>>()
+-        members.forEach { child ->
+-            child.parentIds.forEach { parentId ->
+-                map.getOrPut(parentId) { mutableListOf() }.add(child.id)
+-            }
+-        }
+-        map
+-    }
+-
+-    // Alle Personen, die (transitiv) unterhalb eines eingeklappten Astes
+-    // hängen - diese werden aus dem Layout rausgefiltert, ihr eingeklappter
+-    // "Wurzel"-Vorfahre selbst bleibt sichtbar.
+-    val hiddenIds = remember(collapsedIds, childrenOf) {
+-        val hidden = mutableSetOf<String>()
+-        val queue = ArrayDeque<String>()
+-        queue.addAll(collapsedIds)
+-        while (queue.isNotEmpty()) {
+-            val current = queue.removeFirst()
+-            childrenOf[current]?.forEach { childId ->
+-                if (hidden.add(childId)) queue.add(childId)
+-            }
+-        }
+-        hidden
+-    }
+-
+-    val visibleMembers = remember(members, hiddenIds) {
+-        if (hiddenIds.isEmpty()) members else members.filter { it.id !in hiddenIds }
+-    }
+-
+-    /** Anzahl ALLER (nicht nur direkter) Nachkommen - für die Chip-Beschriftung. */
+-    fun countDescendants(personId: String): Int {
+-        var count = 0
+-        val seen = mutableSetOf<String>()
+-        val queue = ArrayDeque<String>()
+-        childrenOf[personId]?.forEach { queue.add(it) }
+-        while (queue.isNotEmpty()) {
+-            val current = queue.removeFirst()
+-            if (!seen.add(current)) continue
+-            count++
+-            childrenOf[current]?.forEach { queue.add(it) }
+-        }
+-        return count
++    // Von außen vorgegebener Fokus (z. B. direkt nach dem Hinzufügen einer
++    // neuen Person) gewinnt immer - der Baum springt dann automatisch auf
++    // diese Person um.
++    LaunchedEffect(focusPersonId) {
++        if (focusPersonId != null) centeredId = focusPersonId
+     }
+ 
+-    val layout = remember(visibleMembers) { buildTreeLayout(visibleMembers) }
++    val byId = remember(members) { members.associateBy { it.id } }
++    val centered = byId[centeredId] ?: byId[selfPersonId]
+ 
+-    // Falls die Fokus-Person (z. B. gerade neu hinzugefügt) in einem
+-    // eingeklappten Ast steckt, den betroffenen Ast automatisch wieder
+-    // aufklappen - sonst würde der Fokus-Sprung ins Leere laufen, weil die
+-    // Person aus dem Layout rausgefiltert ist.
+-    LaunchedEffect(focusPersonId, hiddenIds) {
+-        if (focusPersonId == null || focusPersonId !in hiddenIds) return@LaunchedEffect
+-        val toExpand = collapsedIds.filter { collapsedId ->
+-            val seen = mutableSetOf<String>()
+-            val queue = ArrayDeque<String>()
+-            queue.add(collapsedId)
+-            var found = false
+-            while (queue.isNotEmpty()) {
+-                val current = queue.removeFirst()
+-                if (!seen.add(current)) continue
+-                if (current == focusPersonId) {
+-                    found = true
+-                    break
+-                }
+-                childrenOf[current]?.forEach { queue.add(it) }
+-            }
+-            found
++    Column(
++        modifier = Modifier
++            .fillMaxSize()
++            .background(FamlyBackground)
++    ) {
++        Column(modifier = Modifier.padding(22.dp, 22.dp, 22.dp, 10.dp)) {
++            Text("Stammbaum", style = MaterialTheme.typography.titleLarge)
++            Text(
++                "${members.size} Personen",
++                style = MaterialTheme.typography.bodySmall,
++                color = FamlyTextSecondary
++            )
+         }
+-        if (toExpand.isNotEmpty()) collapsedIds = collapsedIds - toExpand.toSet()
+-    }
+-    val scope = rememberCoroutineScope()
+-    val scale = remember { Animatable(FOCUS_SCALE) }
+-    val offsetX = remember { Animatable(0f) }
+-    val offsetY = remember { Animatable(0f) }
+ 
+-    // Merkt sich, auf wen zuletzt scharfgestellt wurde. Verhindert, dass der
+-    // Baum bei jedem Rücksprung aus der Detailansicht erneut wegspringt.
+-    var centeredFor by rememberSaveable { mutableStateOf<String?>(null) }
+-    var hasSettled by rememberSaveable { mutableStateOf(false) }
+-
+-    Box(modifier = Modifier.fillMaxSize()) {
+-        Column(modifier = Modifier.fillMaxSize()) {
+-            Column(modifier = Modifier.padding(22.dp, 22.dp, 22.dp, 10.dp)) {
+-                Text("Stammbaum", style = MaterialTheme.typography.titleLarge)
++        Box(modifier = Modifier.fillMaxSize()) {
++            if (centered == null) {
++                // Praktisch nie der Fall (jede Familie hat mindestens "Ich"),
++                // aber sicherheitshalber statt eines Absturzes eine ruhige
++                // Leermeldung.
+                 Text(
+-                    if (collapsedIds.isEmpty()) {
+-                        "${layout.nodes.size} Personen · ${layout.generationCount} Generationen"
+-                    } else {
+-                        "${layout.nodes.size} von ${members.size} Personen sichtbar · ${layout.generationCount} Generationen"
+-                    },
+-                    style = MaterialTheme.typography.bodySmall,
++                    "Noch keine Person gefunden",
++                    modifier = Modifier
++                        .align(Alignment.Center)
++                        .padding(24.dp),
+                     color = FamlyTextSecondary
+                 )
++            } else {
++                AnimatedContent(
++                    targetState = centered,
++                    modifier = Modifier.fillMaxSize(),
++                    transitionSpec = {
++                        (fadeIn(tween(260)) + scaleIn(initialScale = 0.94f, animationSpec = tween(260)))
++                            .togetherWith(fadeOut(tween(180)) + scaleOut(targetScale = 0.94f, animationSpec = tween(180)))
++                    },
++                    label = "treeCenter"
++                ) { person ->
++                    EgoTree(
++                        person = person,
++                        byId = byId,
++                        members = members,
++                        selfPersonId = selfPersonId,
++                        onRecenter = { target -> centeredId = target.id },
++                        onOpenDetail = onPersonClick
++                    )
++                }
+             }
+ 
+-            BoxWithConstraints(
++            // Immer erreichbarer Weg zur eigenen Detailansicht, unabhängig
++            // davon, wie weit man sich im Baum "weggeklickt" hat.
++            Box(
+                 modifier = Modifier
+-                    .fillMaxSize()
+-                    .background(TreeCanvasBackground)
++                    .align(Alignment.BottomEnd)
++                    .padding(end = 14.dp, bottom = 14.dp)
++                    .size(52.dp)
++                    .clip(RoundedCornerShape(26.dp))
++                    .background(FamlyPetrolPrimary)
++                    .clickable(onClick = onOpenSelf),
++                contentAlignment = Alignment.Center
+             ) {
+-                val density = LocalDensity.current
+-                val viewportWidth = with(density) { maxWidth.toPx() }
+-                val viewportHeight = with(density) { maxHeight.toPx() }
+-                val contentWidth = with(density) { layout.width.dp.toPx() }
+-                val contentHeight = with(density) { layout.height.dp.toPx() }
+-
+-                fun clampX(value: Float, currentScale: Float) =
+-                    clampOffset(value, contentWidth * currentScale, viewportWidth)
+-
+-                fun clampY(value: Float, currentScale: Float) =
+-                    clampOffset(value, contentHeight * currentScale, viewportHeight)
+-
+-                /** Offset, bei dem [node] mittig im Viewport liegt. */
+-                fun offsetCenteredOn(node: TreeNode, targetScale: Float): Offset {
+-                    val centerX = with(density) { (node.x + CARD_W / 2f).dp.toPx() }
+-                    val centerY = with(density) { (node.y + CARD_H / 2f).dp.toPx() }
+-                    return Offset(
+-                        clampX(viewportWidth / 2f - centerX * targetScale, targetScale),
+-                        clampY(viewportHeight / 2f - centerY * targetScale, targetScale)
+-                    )
+-                }
+-
+-                fun applyZoom(newScale: Float, focalX: Float, focalY: Float, animate: Boolean) {
+-                    val current = scale.value
+-                    val target = newScale.coerceIn(MIN_SCALE, MAX_SCALE)
+-                    if (target == current) return
+-                    val factor = target / current
+-                    val targetX = clampX(focalX - (focalX - offsetX.value) * factor, target)
+-                    val targetY = clampY(focalY - (focalY - offsetY.value) * factor, target)
+-                    scope.launch {
+-                        if (animate) {
+-                            launch { scale.animateTo(target, tween(180)) }
+-                            launch { offsetX.animateTo(targetX, tween(180)) }
+-                            launch { offsetY.animateTo(targetY, tween(180)) }
+-                        } else {
+-                            scale.snapTo(target)
+-                            offsetX.snapTo(targetX)
+-                            offsetY.snapTo(targetY)
+-                        }
+-                    }
+-                }
+-
+-                /**
+-                 * Skalierung, bei der der GESAMTE Baum in den Viewport passt.
+-                 * Wird für die allererste Ansicht verwendet, damit ein großer
+-                 * Baum nicht schon beim Öffnen nur in einem winzigen
+-                 * Ausschnitt zu sehen ist - man bekommt erst die Übersicht,
+-                 * kann dann gezielt reinzoomen.
+-                 */
+-                fun fitAllScale(): Float =
+-                    min(viewportWidth / contentWidth, viewportHeight / contentHeight)
+-                        .coerceIn(MIN_SCALE, MAX_SCALE)
+-
+-                /** Animiert zur Übersichtsansicht, bei der der komplette Baum sichtbar ist. */
+-                fun goToFitAll() {
+-                    val target = fitAllScale()
+-                    val targetX = (viewportWidth - contentWidth * target) / 2f
+-                    val targetY = (viewportHeight - contentHeight * target) / 2f
+-                    scope.launch {
+-                        val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
+-                        launch { scale.animateTo(target, spec) }
+-                        launch { offsetX.animateTo(targetX, spec) }
+-                        launch { offsetY.animateTo(targetY, spec) }
+-                    }
+-                }
+-
+-                LaunchedEffect(focusPersonId, layout, viewportWidth, viewportHeight) {
+-                    if (layout.nodes.isEmpty() || viewportWidth <= 0f || viewportHeight <= 0f) {
+-                        return@LaunchedEffect
+-                    }
+-
+-                    val target = focusPersonId?.let { id -> layout.nodes.find { it.person.id == id } }
+-                    if (target != null) {
+-                        // Schon dort? Dann nicht erneut wegspringen.
+-                        if (centeredFor == focusPersonId) return@LaunchedEffect
+-                        val destination = offsetCenteredOn(target, FOCUS_SCALE)
+-                        if (hasSettled) {
+-                            // Sichtbar hinfahren, damit klar wird, wo die Person
+-                            // im Baum gelandet ist.
+-                            val spec = tween<Float>(FOCUS_ANIMATION_MS, easing = FastOutSlowInEasing)
+-                            launch { scale.animateTo(FOCUS_SCALE, spec) }
+-                            launch { offsetX.animateTo(destination.x, spec) }
+-                            launch { offsetY.animateTo(destination.y, spec) }
+-                        } else {
+-                            scale.snapTo(FOCUS_SCALE)
+-                            offsetX.snapTo(destination.x)
+-                            offsetY.snapTo(destination.y)
+-                        }
+-                        centeredFor = focusPersonId
+-                        hasSettled = true
+-                        return@LaunchedEffect
+-                    }
+-
+-                    // Fokus-Person (noch) nicht da: erst einmal eine sinnvolle
+-                    // Startansicht zeigen. Sobald der Snapshot die Person
+-                    // nachliefert, läuft dieser Effekt erneut und fährt hin.
+-                    if (hasSettled) return@LaunchedEffect
+-                    val self = layout.nodes.find { it.person.id == selfPersonId }
+-                    // min(FOCUS_SCALE, fitAllScale()): bei einem kleinen Baum
+-                    // ganz normal auf FOCUS_SCALE zentriert auf "Ich", bei
+-                    // einem grossen Baum stattdessen so weit rausgezoomt,
+-                    // dass alles auf einen Blick sichtbar ist.
+-                    val initialScale = min(FOCUS_SCALE, fitAllScale())
+-                    if (self != null) {
+-                        val destination = offsetCenteredOn(self, initialScale)
+-                        scale.snapTo(initialScale)
+-                        offsetX.snapTo(destination.x)
+-                        offsetY.snapTo(destination.y)
+-                    } else {
+-                        scale.snapTo(initialScale)
+-                        offsetX.snapTo((viewportWidth - contentWidth * initialScale) / 2f)
+-                        offsetY.snapTo((viewportHeight - contentHeight * initialScale) / 2f)
+-                    }
+-                    hasSettled = true
+-                }
+-
+-                Box(
+-                    modifier = Modifier
+-                        .fillMaxSize()
+-                        .pointerInput(layout, viewportWidth, viewportHeight) {
+-                            detectTransformGestures { centroid, pan, zoom, _ ->
+-                                val current = scale.value
+-                                val target = (current * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
+-                                val factor = target / current
+-                                // Punkt unter dem Finger bleibt stehen - vorher
+-                                // zoomte der Baum immer zur linken oberen Ecke.
+-                                val nextX = centroid.x - (centroid.x - offsetX.value) * factor + pan.x
+-                                val nextY = centroid.y - (centroid.y - offsetY.value) * factor + pan.y
+-                                scope.launch {
+-                                    scale.snapTo(target)
+-                                    offsetX.snapTo(clampX(nextX, target))
+-                                    offsetY.snapTo(clampY(nextY, target))
+-                                }
+-                                // Manuelles Verschieben hebt den Auto-Fokus auf.
+-                                if (centeredFor != null) centeredFor = null
+-                            }
+-                        }
+-                ) {
+-                    Box(
+-                        modifier = Modifier
+-                            // Block-Form: die Animatable-Werte werden erst in der
+-                            // Draw-Phase gelesen, das erspart eine Recomposition
+-                            // pro Frame beim Pannen/Zoomen.
+-                            .graphicsLayer {
+-                                scaleX = scale.value
+-                                scaleY = scale.value
+-                                translationX = offsetX.value
+-                                translationY = offsetY.value
+-                                transformOrigin = TransformOrigin(0f, 0f)
+-                            }
+-                            .size(layout.width.dp, layout.height.dp)
+-                    ) {
+-                        Canvas(modifier = Modifier.fillMaxSize()) {
+-                            val radius = LineCornerRadius.toPx()
+-                            layout.links.forEach { link ->
+-                                drawTreeLink(
+-                                    points = link.points.map {
+-                                        Offset(it.x.dp.toPx(), it.y.dp.toPx())
+-                                    },
+-                                    color = FamlyTreeLine,
+-                                    strokeWidth = if (link.isPartner) {
+-                                        PartnerLineWidth.toPx()
+-                                    } else {
+-                                        LineWidth.toPx()
+-                                    },
+-                                    cornerRadius = radius
+-                                )
+-                            }
+-                        }
+-
+-                        layout.nodes.forEach { node ->
+-                            // key() haelt die Composable-Identitaet ueber
+-                            // Person.id fest, statt ueber die Iterationsreihenfolge -
+-                            // sonst wuerde animateDpAsState bei jeder
+-                            // Baum-Umsortierung faelschlich von vorne anfangen
+-                            // (oder die falsche Karte animieren), weil Compose
+-                            // sie sonst nur positionell wiederverwendet.
+-                            key(node.person.id) {
+-                                val animatedX by animateDpAsState(
+-                                    targetValue = node.x.dp,
+-                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
+-                                    label = "treeCardX"
+-                                )
+-                                val animatedY by animateDpAsState(
+-                                    targetValue = node.y.dp,
+-                                    animationSpec = tween(REFLOW_ANIMATION_MS, easing = FastOutSlowInEasing),
+-                                    label = "treeCardY"
+-                                )
+-                                TreeCard(
+-                                    person = node.person,
+-                                    accent = FamlyGenColors[node.generation.mod(FamlyGenColors.size)],
+-                                    onClick = { onPersonClick(node.person) },
+-                                    highlighted = node.person.id == focusPersonId,
+-                                    isSelf = node.person.id == selfPersonId,
+-                                    modifier = Modifier.offset(x = animatedX, y = animatedY)
+-                                )
+-
+-                                val hasChildren = childrenOf[node.person.id]?.isNotEmpty() == true
+-                                val isCollapsed = node.person.id in collapsedIds
+-                                if (hasChildren && isCollapsed) {
+-                                    // Ganzer Ast eingeklappt: statt der (ausgeblendeten)
+-                                    // Kinder-Reihe steht hier ein kompakter Chip mit
+-                                    // Anzahl, der den Ast wieder aufklappt.
+-                                    CollapsedBranchChip(
+-                                        count = countDescendants(node.person.id),
+-                                        onClick = { collapsedIds = collapsedIds - node.person.id },
+-                                        modifier = Modifier.offset(
+-                                            x = animatedX,
+-                                            y = animatedY + CARD_H.dp + 10.dp
+-                                        )
+-                                    )
+-                                } else if (hasChildren) {
+-                                    // Noch ausgeklappt, aber einklappbar - kleiner,
+-                                    // dezenter Trigger unten an der Karte statt
+-                                    // eines vollen Chips (der würde bei jeder
+-                                    // ausgeklappten Person unnötig Platz wegnehmen).
+-                                    CollapseTrigger(
+-                                        onClick = { collapsedIds = collapsedIds + node.person.id },
+-                                        modifier = Modifier.offset(
+-                                            x = animatedX + (CARD_W.dp - 22.dp) / 2f,
+-                                            y = animatedY + CARD_H.dp - 11.dp
+-                                        )
+-                                    )
+-                                }
+-                            }
+-                        }
+-                    }
+-                }
+-
+-                Column(
+-                    modifier = Modifier
+-                        .align(Alignment.BottomStart)
+-                        .padding(start = 14.dp, bottom = 14.dp),
+-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+-                ) {
+-                    ZoomButton(
+-                        icon = Icons.Filled.Add,
+-                        onClick = {
+-                            applyZoom(
+-                                scale.value + 0.2f,
+-                                viewportWidth / 2f,
+-                                viewportHeight / 2f,
+-                                animate = true
+-                            )
+-                        }
+-                    )
+-                    ZoomButton(
+-                        icon = Icons.Filled.Remove,
+-                        onClick = {
+-                            applyZoom(
+-                                scale.value - 0.2f,
+-                                viewportWidth / 2f,
+-                                viewportHeight / 2f,
+-                                animate = true
+-                            )
+-                        }
+-                    )
+-                    ZoomButton(
+-                        icon = Icons.Filled.FitScreen,
+-                        contentDescription = "Alles anzeigen",
+-                        onClick = { goToFitAll() }
+-                    )
+-                }
+-
+-                // Immer erreichbarer Weg zurück zu "Ich", unabhängig davon,
+-                // wohin man im Baum gepannt/gezoomt hat.
+-                Box(
+-                    modifier = Modifier
+-                        .align(Alignment.BottomEnd)
+-                        .padding(end = 14.dp, bottom = 14.dp)
+-                        .size(52.dp)
+-                        .clip(RoundedCornerShape(26.dp))
+-                        .background(FamlyPetrolPrimary)
+-                        .clickable(onClick = onOpenSelf),
+-                    contentAlignment = Alignment.Center
+-                ) {
+-                    Icon(
+-                        imageVector = Icons.Filled.Person,
+-                        contentDescription = "Zu mir",
+-                        tint = FamlyWhite
+-                    )
+-                }
++                Icon(
++                    imageVector = Icons.Filled.Person,
++                    contentDescription = "Zu mir",
++                    tint = FamlyWhite
++                )
+             }
+         }
+     }
+ }
+ 
+ /**
+- * Begrenzt das Verschieben so, dass der Baum nicht komplett aus dem Bild
+- * gezogen werden kann. Passt der Inhalt komplett in den Viewport, wird er
+- * zentriert.
++ * Die eigentliche Drei-Reihen-Ansicht für [person]: Eltern oben,
++ * [person] + Partner:in in der Mitte, Kinder unten. Nur Reihen, die
++ * tatsächlich Personen enthalten, werden gerendert.
+  */
+-private fun clampOffset(value: Float, scaledContent: Float, viewport: Float): Float =
+-    if (scaledContent <= viewport) {
+-        (viewport - scaledContent) / 2f
+-    } else {
+-        value.coerceIn(viewport - scaledContent, 0f)
+-    }
+-
+-/** Zeichnet eine rechtwinklige Polyline mit abgerundeten Ecken. */
+-private fun DrawScope.drawTreeLink(
+-    points: List<Offset>,
+-    color: Color,
+-    strokeWidth: Float,
+-    cornerRadius: Float
+-) {
+-    if (points.size < 2) return
+-    val path = Path()
+-    path.moveTo(points.first().x, points.first().y)
+-    for (i in 1 until points.size - 1) {
+-        val previous = points[i - 1]
+-        val current = points[i]
+-        val next = points[i + 1]
+-        val inLength = (current - previous).getDistance()
+-        val outLength = (next - current).getDistance()
+-        if (inLength < 0.01f || outLength < 0.01f) continue
+-        val radius = min(cornerRadius, min(inLength, outLength) / 2f)
+-        val start = current + (previous - current) * (radius / inLength)
+-        val end = current + (next - current) * (radius / outLength)
+-        path.lineTo(start.x, start.y)
+-        path.quadraticBezierTo(current.x, current.y, end.x, end.y)
+-    }
+-    path.lineTo(points.last().x, points.last().y)
+-    drawPath(
+-        path = path,
+-        color = color,
+-        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+-    )
+-}
+-
+ @Composable
+-private fun TreeCard(
++private fun EgoTree(
+     person: Person,
+-    accent: Color,
+-    onClick: () -> Unit,
+-    highlighted: Boolean = false,
+-    isSelf: Boolean = false,
+-    modifier: Modifier = Modifier
++    byId: Map<String, Person>,
++    members: List<Person>,
++    selfPersonId: String,
++    onRecenter: (Person) -> Unit,
++    onOpenDetail: (Person) -> Unit
+ ) {
+-    val sub = if (person.isDeceased) person.birthDate.ifBlank { "verstorben" } else person.birthDate
+-    // "Ich" bekommt eine dauerhafte Umrandung, damit man sich im Baum immer
+-    // sofort wiederfindet - unabhängig vom temporären Fokus-Highlight.
+-    val borderColor = when {
+-        highlighted -> FamlyAccentOrange
+-        isSelf -> FamlyPetrolPrimary
+-        else -> null
+-    }
++    // Fallback für Altbestand/unklare Fälle: falls motherId/fatherId nicht
++    // gesetzt sind, parentIds aber trotzdem 1-2 Einträge hat, die freien
++    // Slots damit auffüllen statt fälschlich keine Eltern anzuzeigen
++    // (analog zum Fallback im PersonDetailScreen).
++    val explicitMother = byId[person.motherId]
++    val explicitFather = byId[person.fatherId]
++    val unclassifiedParents = person.parentIds
++        .filter { it != person.motherId && it != person.fatherId }
++        .mapNotNull { byId[it] }
++    val mother = explicitMother ?: unclassifiedParents.getOrNull(0)
++    val father = explicitFather ?: unclassifiedParents.firstOrNull { it.id != mother?.id }
++    val partner = byId[person.partnerId]
++    val children = remember(person.id, members) { members.filter { person.id in it.parentIds } }
++
+     Column(
+-        modifier = modifier
+-            .width(CARD_W.dp)
+-            .clip(RoundedCornerShape(18.dp))
+-            .then(
+-                if (borderColor != null) {
+-                    Modifier.border(2.5.dp, borderColor, RoundedCornerShape(18.dp))
+-                } else {
+-                    Modifier
+-                }
+-            )
+-            .background(FamlyWhite)
+-            .clickable(onClick = onClick)
+-            .padding(top = 14.dp),
+-        horizontalAlignment = Alignment.CenterHorizontally,
+-        verticalArrangement = Arrangement.spacedBy(4.dp)
++        modifier = Modifier
++            .fillMaxSize()
++            .verticalScroll(rememberScrollState())
++            .padding(vertical = 20.dp),
++        horizontalAlignment = Alignment.CenterHorizontally
+     ) {
+-        FamlyAvatar(initial = person.initial, accent = accent, size = 48, cornerRadius = 24)
+-        Text(
+-            person.name,
+-            style = MaterialTheme.typography.bodyMedium,
+-            fontWeight = FontWeight.Bold,
+-            color = FamlyTextPrimary,
+-            maxLines = 1
+-        )
+-        if (sub.isNotBlank()) {
+-            Text(sub, fontSize = 11.5.sp, color = FamlyTextSecondary, fontWeight = FontWeight.Bold)
++        if (mother != null || father != null) {
++            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
++                mother?.let { RoleCard(person = it, role = "Mama", onClick = { onRecenter(it) }) }
++                father?.let { RoleCard(person = it, role = "Papa", onClick = { onRecenter(it) }) }
++            }
++            Connector()
+         }
+-        Box(modifier = Modifier.padding(bottom = 12.dp))
+-    }
+-}
+ 
+-/**
+- * Chip statt einer ausgeblendeten Kinder-Reihe, wenn ein Ast eingeklappt
+- * ist. Zeigt die Gesamtzahl der versteckten Nachkommen (nicht nur direkte
+- * Kinder), Tap klappt den Ast wieder auf.
+- */
+-@Composable
+-private fun CollapsedBranchChip(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+-    Box(modifier = modifier.width(CARD_W.dp), contentAlignment = Alignment.TopCenter) {
+-        Box(
+-            modifier = Modifier
+-                .clip(RoundedCornerShape(100.dp))
+-                .background(FamlyWhite)
+-                .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.25f), RoundedCornerShape(100.dp))
+-                .clickable(onClick = onClick)
+-                .padding(horizontal = 14.dp, vertical = 8.dp)
++        Row(
++            verticalAlignment = Alignment.CenterVertically,
++            horizontalArrangement = Arrangement.spacedBy(10.dp)
+         ) {
+-            Row(
+-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+-                verticalAlignment = Alignment.CenterVertically
+-            ) {
+-                Icon(
+-                    imageVector = Icons.Filled.Group,
+-                    contentDescription = null,
+-                    tint = FamlyPetrolPrimary,
+-                    modifier = Modifier.size(14.dp)
+-                )
+-                Text(
+-                    "$count einblenden",
+-                    fontSize = 12.sp,
+-                    fontWeight = FontWeight.Bold,
+-                    color = FamlyPetrolPrimary
+-                )
++            CenterCard(
++                person = person,
++                isSelf = person.id == selfPersonId,
++                onClick = { onOpenDetail(person) }
++            )
++            if (partner != null) {
+                 Icon(
+-                    imageVector = Icons.Filled.ChevronRight,
++                    imageVector = Icons.Filled.Favorite,
+                     contentDescription = null,
+-                    tint = FamlyPetrolPrimary,
++                    tint = FamlyAccentOrange,
+                     modifier = Modifier.size(14.dp)
+                 )
++                RoleCard(person = partner, role = "Partner:in", onClick = { onRecenter(partner) })
++            }
++        }
++
++        if (children.isNotEmpty()) {
++            Connector()
++            Row(
++                horizontalArrangement = Arrangement.spacedBy(12.dp),
++                modifier = Modifier
++                    .widthIn(max = 340.dp)
++                    .horizontalScroll(rememberScrollState())
++                    .padding(horizontal = 22.dp)
++            ) {
++                children.forEach { child ->
++                    RoleCard(person = child, role = null, onClick = { onRecenter(child) })
++                }
+             }
+         }
+     }
+ }
+ 
+-/**
+- * Kleiner, dezenter Kreis-Button unten an einer Karte mit Kindern, um
+- * deren Ast einzuklappen. Bewusst kein voller Chip wie beim eingeklappten
+- * Zustand - würde bei jeder ausgeklappten Person unnötig Platz wegnehmen.
+- */
++/** Kurze vertikale Verbindungslinie zwischen zwei Reihen. */
+ @Composable
+-private fun CollapseTrigger(onClick: () -> Unit, modifier: Modifier = Modifier) {
++private fun Connector() {
+     Box(
+-        modifier = modifier
+-            .size(22.dp)
+-            .clip(RoundedCornerShape(50))
++        modifier = Modifier
++            .width(1.5.dp)
++            .height(18.dp)
++            .background(FamlyTreeLine)
++    )
++}
++
++/** Kleinere Karte für Eltern/Partner:in/Kinder - tippen zentriert die Ansicht auf diese Person neu. */
++@Composable
++private fun RoleCard(person: Person, role: String?, onClick: () -> Unit) {
++    Column(
++        modifier = Modifier
++            .width(ROLE_CARD_WIDTH)
++            .clip(RoundedCornerShape(16.dp))
+             .background(FamlyWhite)
+-            .border(0.5.dp, FamlyTextSecondary.copy(alpha = 0.3f), RoundedCornerShape(50))
+-            .clickable(onClick = onClick),
+-        contentAlignment = Alignment.Center
++            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
++            .clickable(onClick = onClick)
++            .padding(vertical = 10.dp, horizontal = 6.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.spacedBy(4.dp)
+     ) {
+-        Icon(
+-            imageVector = Icons.Filled.ExpandMore,
+-            contentDescription = "Ast einklappen",
+-            tint = FamlyTextSecondary,
+-            modifier = Modifier.size(14.dp)
++        FamlyAvatar(initial = person.initial, accentType = person.accent, size = 34, cornerRadius = 12)
++        Text(
++            person.name,
++            style = MaterialTheme.typography.bodySmall,
++            fontWeight = FontWeight.Bold,
++            color = FamlyTextPrimary,
++            maxLines = 1
+         )
++        if (role != null) {
++            Text(role, fontSize = 10.sp, color = FamlyTextSecondary)
++        }
+     }
+ }
+ 
++/** Größere, hervorgehobene Karte für die aktuell fokussierte Person - tippen öffnet die Detailansicht. */
+ @Composable
+-private fun ZoomButton(
+-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+-    contentDescription: String? = null,
+-    onClick: () -> Unit
+-) {
+-    Box(
++private fun CenterCard(person: Person, isSelf: Boolean, onClick: () -> Unit) {
++    Column(
+         modifier = Modifier
+-            .size(38.dp)
+-            .clip(RoundedCornerShape(50))
++            .width(CENTER_CARD_WIDTH)
++            .clip(RoundedCornerShape(18.dp))
+             .background(FamlyWhite)
+-            .clickable(onClick = onClick),
+-        contentAlignment = Alignment.Center
++            .border(
++                2.dp,
++                if (isSelf) FamlyPetrolPrimary else FamlyAccentOrange,
++                RoundedCornerShape(18.dp)
++            )
++            .clickable(onClick = onClick)
++            .padding(vertical = 12.dp, horizontal = 8.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.spacedBy(4.dp)
+     ) {
+-        Icon(imageVector = icon, contentDescription = contentDescription, tint = FamlyPetrolPrimary, modifier = Modifier.size(18.dp))
++        FamlyAvatar(initial = person.initial, accentType = person.accent, size = 44, cornerRadius = 16)
++        Text(
++            person.name,
++            style = MaterialTheme.typography.bodyMedium,
++            fontWeight = FontWeight.Bold,
++            color = FamlyTextPrimary,
++            maxLines = 1
++        )
++        val sub = if (person.isDeceased) person.birthDate.ifBlank { "verstorben" } else person.birthDate
++        if (sub.isNotBlank()) {
++            Text(sub, fontSize = 11.sp, color = FamlyTextSecondary)
++        }
+     }
+-}
+\ No newline at end of file
++}
+-- 
+2.43.0
+

@@ -36,6 +36,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
@@ -237,15 +238,17 @@ fun TreeScreen(
                 // landen, auch wenn eine Seite mehr Generationen aufgeklappt
                 // hat als die andere.
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    AncestorStack(
-                        person = centered,
-                        byId = byId,
-                        expandedAncestorsOf = expandedAncestorsOf,
-                        onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
-                        onTapCard = { sheetPerson = it },
-                        alwaysShowParents = true,
-                        isCenterCard = true
-                    )
+                    key(centered.id) {
+                        AncestorStack(
+                            person = centered,
+                            byId = byId,
+                            expandedAncestorsOf = expandedAncestorsOf,
+                            onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
+                            onTapCard = { sheetPerson = it },
+                            alwaysShowParents = true,
+                            isCenterCard = true
+                        )
+                    }
                     if (partner != null) {
                         Icon(
                             imageVector = Icons.Filled.Favorite,
@@ -255,34 +258,40 @@ fun TreeScreen(
                                 .padding(bottom = 14.dp)
                                 .size(13.dp)
                         )
-                        AncestorStack(
-                            person = partner,
-                            byId = byId,
-                            expandedAncestorsOf = expandedAncestorsOf,
-                            onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
-                            onTapCard = { sheetPerson = it },
-                            alwaysShowParents = true,
-                            isCenterCard = false
-                        )
+                        key(partner.id) {
+                            AncestorStack(
+                                person = partner,
+                                byId = byId,
+                                expandedAncestorsOf = expandedAncestorsOf,
+                                onToggleAncestors = { id -> expandedAncestorsOf = expandedAncestorsOf.toggled(id) },
+                                onTapCard = { sheetPerson = it },
+                                alwaysShowParents = true,
+                                isCenterCard = false
+                            )
+                        }
                     }
                 }
 
                 val children = childrenOf[centered.id].orEmpty()
                 if (children.isNotEmpty()) {
                     Connector()
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.horizontalScroll(rememberScrollState())
-                    ) {
-                        children.forEach { child ->
-                            DescendantStack(
-                                person = child,
-                                childrenOf = childrenOf,
-                                expandedDescendantsOf = expandedDescendantsOf,
-                                onToggleDescendants = { id -> expandedDescendantsOf = expandedDescendantsOf.toggled(id) },
-                                onTapCard = { sheetPerson = it },
-                                alwaysShowChildren = false
-                            )
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            children.forEach { child ->
+                                key(child.id) {
+                                    DescendantStack(
+                                        person = child,
+                                        childrenOf = childrenOf,
+                                        expandedDescendantsOf = expandedDescendantsOf,
+                                        onToggleDescendants = { id -> expandedDescendantsOf = expandedDescendantsOf.toggled(id) },
+                                        onTapCard = { sheetPerson = it },
+                                        alwaysShowChildren = false
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -340,26 +349,30 @@ private fun AncestorStack(
         if (hasParents && showParents) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 mother?.let {
-                    AncestorStack(
-                        person = it,
-                        byId = byId,
-                        expandedAncestorsOf = expandedAncestorsOf,
-                        onToggleAncestors = onToggleAncestors,
-                        onTapCard = onTapCard,
-                        alwaysShowParents = false,
-                        isCenterCard = false
-                    )
+                    key(it.id) {
+                        AncestorStack(
+                            person = it,
+                            byId = byId,
+                            expandedAncestorsOf = expandedAncestorsOf,
+                            onToggleAncestors = onToggleAncestors,
+                            onTapCard = onTapCard,
+                            alwaysShowParents = false,
+                            isCenterCard = false
+                        )
+                    }
                 }
                 father?.let {
-                    AncestorStack(
-                        person = it,
-                        byId = byId,
-                        expandedAncestorsOf = expandedAncestorsOf,
-                        onToggleAncestors = onToggleAncestors,
-                        onTapCard = onTapCard,
-                        alwaysShowParents = false,
-                        isCenterCard = false
-                    )
+                    key(it.id) {
+                        AncestorStack(
+                            person = it,
+                            byId = byId,
+                            expandedAncestorsOf = expandedAncestorsOf,
+                            onToggleAncestors = onToggleAncestors,
+                            onTapCard = onTapCard,
+                            alwaysShowParents = false,
+                            isCenterCard = false
+                        )
+                    }
                 }
             }
             Connector()
@@ -394,14 +407,16 @@ private fun DescendantStack(
                 Connector()
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     children.forEach { child ->
-                        DescendantStack(
-                            person = child,
-                            childrenOf = childrenOf,
-                            expandedDescendantsOf = expandedDescendantsOf,
-                            onToggleDescendants = onToggleDescendants,
-                            onTapCard = onTapCard,
-                            alwaysShowChildren = false
-                        )
+                        key(child.id) {
+                            DescendantStack(
+                                person = child,
+                                childrenOf = childrenOf,
+                                expandedDescendantsOf = expandedDescendantsOf,
+                                onToggleDescendants = onToggleDescendants,
+                                onTapCard = onTapCard,
+                                alwaysShowChildren = false
+                            )
+                        }
                     }
                 }
             } else {
